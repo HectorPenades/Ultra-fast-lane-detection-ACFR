@@ -1089,45 +1089,81 @@ def call_culane_eval(data_dir, exp_name,output_path):
             res = read_helper(out_single)
             # populate res_all with the single result under res_normal (and copy to others for compatibility)
             res_all = {}
-            res_all['res_normal'] = res
-            res_all['res_crowd']= res
-            res_all['res_night']= res
-            res_all['res_noline'] = res
-            res_all['res_shadow'] = res
-            res_all['res_arrow']= res
-            res_all['res_hlight'] = res
-            res_all['res_curve']= res
-            res_all['res_cross']= res
-            return res_all
+            w_lane = 30
+            im_w = 1640
+            im_h = 590
+            frame = 1
+            split_dir = os.path.join(data_dir, 'list', 'test_split')
+            eval_cmd = './evaluation/culane/evaluate'
+            if platform.system() == 'Windows':
+                eval_cmd = eval_cmd.replace('/', os.sep)
 
-    # Run both evaluations (0.3 then 0.5) and return a dict with both results
-    res_03 = _call_with_iou(0.3)
-    res_05 = _call_with_iou(0.5)
-    return {'0.3': res_03, '0.5': res_05}
+            # Run the evaluator for two IOU thresholds (0.3 and 0.5) using the same detection files
+            results = {}
+            for iou in [0.3, 0.5]:
+                # prepare output files for this iou
+                if os.path.exists(split_dir):
+                    list_files = [
+                        os.path.join(data_dir,'list/test_split/test0_normal.txt'),
+                        os.path.join(data_dir,'list/test_split/test1_crowd.txt'),
+                        os.path.join(data_dir,'list/test_split/test2_hlight.txt'),
+                        os.path.join(data_dir,'list/test_split/test3_shadow.txt'),
+                        os.path.join(data_dir,'list/test_split/test4_noline.txt'),
+                        os.path.join(data_dir,'list/test_split/test5_arrow.txt'),
+                        os.path.join(data_dir,'list/test_split/test6_curve.txt'),
+                        os.path.join(data_dir,'list/test_split/test7_cross.txt'),
+                        os.path.join(data_dir,'list/test_split/test8_night.txt')
+                    ]
+                    if not os.path.exists(os.path.join(output_path,'txt')):
+                        os.mkdir(os.path.join(output_path,'txt'))
+                    out_files = [
+                        os.path.join(output_path,'txt',f'out0_normal_{int(iou*10)}.txt'),
+                        os.path.join(output_path,'txt',f'out1_crowd_{int(iou*10)}.txt'),
+                        os.path.join(output_path,'txt',f'out2_hlight_{int(iou*10)}.txt'),
+                        os.path.join(output_path,'txt',f'out3_shadow_{int(iou*10)}.txt'),
+                        os.path.join(output_path,'txt',f'out4_noline_{int(iou*10)}.txt'),
+                        os.path.join(output_path,'txt',f'out5_arrow_{int(iou*10)}.txt'),
+                        os.path.join(output_path,'txt',f'out6_curve_{int(iou*10)}.txt'),
+                        os.path.join(output_path,'txt',f'out7_cross_{int(iou*10)}.txt'),
+                        os.path.join(output_path,'txt',f'out8_night_{int(iou*10)}.txt')
+                    ]
 
-def call_curvelane_eval(data_dir, exp_name,output_path):
-    if data_dir[-1] != '/':
-        data_dir = data_dir + '/'
-    detect_dir=os.path.join(output_path,exp_name)+'/'
+                    # call evaluator for each split file
+                    for lf, of in zip(list_files, out_files):
+                        cmd = '%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s' % (eval_cmd, data_dir, detect_dir, data_dir, lf, w_lane, iou, im_w, im_h, frame, of)
+                        os.system(cmd)
 
-    w_lane=5
-    iou=0.5  # Set iou to 0.3 or 0.5
-    im_w=224
-    im_h=224
-    x_factor = 224 / 2560
-    y_factor = 224 / 1440
-    frame=1
-    list0 = os.path.join(data_dir, 'valid', 'valid_for_culane_style.txt')
-    if not os.path.exists(os.path.join(output_path,'txt')):
-        os.mkdir(os.path.join(output_path,'txt'))
-    out0=os.path.join(output_path,'txt','out0_curve.txt')
+                    res_all = {}
+                    res_all['res_normal'] = read_helper(out_files[0])
+                    res_all['res_crowd']= read_helper(out_files[1])
+                    res_all['res_night']= read_helper(out_files[8])
+                    res_all['res_noline'] = read_helper(out_files[4])
+                    res_all['res_shadow'] = read_helper(out_files[3])
+                    res_all['res_arrow']= read_helper(out_files[5])
+                    res_all['res_hlight'] = read_helper(out_files[2])
+                    res_all['res_curve']= read_helper(out_files[6])
+                    res_all['res_cross']= read_helper(out_files[7])
+                    results[str(iou)] = res_all
+                else:
+                    # Fallback: evaluate single test list
+                    list_file = os.path.join(data_dir, 'list', 'test.txt')
+                    if not os.path.exists(os.path.join(output_path,'txt')):
+                        os.mkdir(os.path.join(output_path,'txt'))
+                    out_single = os.path.join(output_path,'txt',f'out_single_{int(iou*10)}.txt')
+                    cmd = '%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s' % (eval_cmd, data_dir, detect_dir, data_dir, list_file, w_lane, iou, im_w, im_h, frame, out_single)
+                    os.system(cmd)
+                    res = read_helper(out_single)
+                    res_all = {k: res for k in ['res_normal','res_crowd','res_night','res_noline','res_shadow','res_arrow','res_hlight','res_curve','res_cross']}
+                    results[str(iou)] = res_all
 
-    eval_cmd = './evaluation/culane/evaluate'
-    if platform.system() == 'Windows':
-        eval_cmd = eval_cmd.replace('/', os.sep)
+            # persist a summary JSON with both IOU results for easy inspection
+            try:
+                summary_path = os.path.join(output_path, f"{exp_name}_eval_results.json")
+                with open(summary_path, 'w') as sf:
+                    json.dump(results, sf, indent=2)
+                if is_main_process():
+                    dist_print(f"Wrote evaluation summary to: {summary_path}")
+            except Exception as e:
+                dist_print(f"Failed to write evaluation summary: {e}")
 
-    print('./evaluate -s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s -x %s -y %s'%(data_dir,detect_dir,data_dir,list0,w_lane,iou,im_w,im_h,frame,out0, x_factor, y_factor))
-    os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s -x %s -y %s'%(eval_cmd,data_dir,detect_dir,data_dir,list0,w_lane,iou,im_w,im_h,frame,out0, x_factor, y_factor))
-    res_all = {}
-    res_all['res_curve'] = read_helper(out0)
-    return res_all
+            return results
