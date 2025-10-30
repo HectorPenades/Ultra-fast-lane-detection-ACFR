@@ -6,7 +6,55 @@ import os, json, torch, scipy
 import numpy as np
 import platform
 from scipy.optimize import leastsq
+import time
 from data.constant import culane_col_anchor, culane_row_anchor
+from PIL import Image
+
+
+def _prepare_disp_img(img_vis, force_swap=False):
+    """Return a HxWx3 uint8 RGB image for matplotlib display.
+    Accepts float [0,1] or uint8 [0,255], handles grayscale or RGBA, and
+    applies a conservative BGR->RGB heuristic swap when channel means indicate BGR.
+    """
+    arr = np.asarray(img_vis)
+    # convert floats in [0,1] to uint8
+    if arr.dtype != np.uint8:
+        try:
+            arr = np.clip(arr, 0.0, 1.0)
+            arr = (arr * 255.0).astype('uint8')
+        except Exception:
+            # fallback: try a direct astype
+            arr = arr.astype('uint8')
+
+    # ensure 3 channels
+    if arr.ndim == 2:
+        arr = np.stack([arr, arr, arr], axis=-1)
+    if arr.ndim == 3 and arr.shape[2] == 4:
+        arr = arr[..., :3]
+
+    # conservative BGR->RGB heuristic: if green dominates both other channels,
+    # it's likely the image is actually BGR stored as (B,G,R) -> swap for display
+    try:
+        r_mean = float(arr[..., 0].mean())
+        g_mean = float(arr[..., 1].mean())
+        b_mean = float(arr[..., 2].mean())
+        dist_print(f"[eval vis] img channel means R:{r_mean:.1f} G:{g_mean:.1f} B:{b_mean:.1f}")
+        if force_swap:
+            dist_print("[eval vis] force-swap enabled: swapping channels for display (BGR->RGB)")
+            arr = arr[..., ::-1]
+        else:
+            # Auto-swap is disabled by default to avoid incorrectly swapping RGB images.
+            # We still log strong channel imbalances so you can decide to force-swap.
+            if g_mean > r_mean * 1.5 and g_mean > b_mean * 1.5:
+                dist_print("[eval vis] channel means suggest green-dominant image (possible BGR)." +
+                           " If the image appears wrong, call _prepare_disp_img(..., force_swap=True).")
+            elif b_mean > r_mean * 1.5 and b_mean > g_mean * 1.5:
+                dist_print("[eval vis] channel means suggest blue-dominant image (possible BGR)." +
+                           " If the image appears wrong, call _prepare_disp_img(..., force_swap=True).")
+    except Exception:
+        pass
+
+    return arr
 
 def _sanitize_lane_list(desired, num_lane):
     # Keep only indices that exist in the current model output; if none left, fall back to all lanes
@@ -525,7 +573,7 @@ def rectify_lines(names, output_path):
             fp.close()
 
 
-def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_ratio, train_width, train_height , batch_size=8, row_anchor = None, col_anchor = None):
+def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_ratio, train_width, train_height , batch_size=8, row_anchor = None, col_anchor = None, logger=None):
     # torch.backends.cudnn.benchmark = True
     output_path = os.path.join(work_dir, exp_name)
     if not os.path.exists(output_path) and is_main_process():
@@ -538,6 +586,129 @@ def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_rati
         imgs = imgs.cuda()
         with torch.no_grad():
             pred = net(imgs)
+
+        # Precompute a shared display image for this batch when we will log visuals.
+        # This ensures `eval/input_with_pred` and `eval/input_with_lines` use the
+        # exact same disp_img array (float img_vis and uint8 disp_img_show_shared).
+        disp_img_show_shared = None
+        img_vis_shared = None
+        if logger is not None and is_main_process() and (i % 20 == 0):
+            try:
+                img_sh = imgs[0].cpu().numpy()
+                if img_sh.ndim == 3:
+                    img_sh = np.transpose(img_sh, (1,2,0))
+                mean = np.array([0.485, 0.456, 0.406])
+                std = np.array([0.229, 0.224, 0.225])
+                img_vis_shared = (img_sh * std[None,None,:]) + mean[None,None,:]
+                img_vis_shared = np.clip(img_vis_shared, 0, 1)
+                # uint8 RGB prepared once
+                disp_img_show_shared = _prepare_disp_img(img_vis_shared)
+            except Exception:
+                disp_img_show_shared = None
+                img_vis_shared = None
+        # Optionally log a visualisation of the first image of this batch to TensorBoard
+        try:
+            if logger is not None and is_main_process() and (i % 20 == 0):
+                # prepare image for display (reuse precomputed shared image when available)
+                if img_vis_shared is not None and disp_img_show_shared is not None:
+                    img_vis = img_vis_shared
+                    disp_img_show = disp_img_show_shared
+                    H, W = img_vis.shape[:2]
+                else:
+                    # fallback: compute per-batch
+                    img = imgs[0].cpu().numpy()
+                    if img.ndim == 3:
+                        img = np.transpose(img, (1,2,0))
+                    mean = np.array([0.485, 0.456, 0.406])
+                    std = np.array([0.229, 0.224, 0.225])
+                    img_vis = (img * std[None,None,:]) + mean[None,None,:]
+                    img_vis = np.clip(img_vis, 0, 1)
+                    H, W = img_vis.shape[:2]
+
+                # compute predicted row/col points from tensors
+                pts = []
+                if 'loc_row' in pred and 'exist_row' in pred:
+                    out = pred['loc_row'].cpu()
+                    out_ext = pred['exist_row'].cpu()
+                    grid = torch.arange(out.shape[1]) + 0.5
+                    grid = grid.view(1,-1,1,1)
+                    loc = (out.softmax(1) * grid).sum(1)
+                    # map loc from grid to resized width
+                    loc = loc / (out.shape[1]-1) * (W - 1)
+                    valid = out_ext.argmax(1).cpu()
+                    # iterate anchors
+                    num_cls = valid.shape[1]
+                    num_lane = valid.shape[2]
+                    for k in range(num_cls):
+                        y = None
+                        # row_anchor may be normalized or in pixel space; prefer provided row_anchor
+                        if row_anchor is not None:
+                            y = row_anchor[k] * (H - 1)
+                        else:
+                            # fallback to culane_row_anchor mapping (assumed 288px) scaled to H
+                            y = (culane_row_anchor[k] / 288.0) * (H - 1)
+                        for lane_idx in range(num_lane):
+                            if valid[0,k,lane_idx]:
+                                x = float(loc[0,k,lane_idx])
+                                pts.append(('row', (x, y)))
+                # columns (x fixed from anchors, y from loc_col)
+                if 'loc_col' in pred and 'exist_col' in pred:
+                    outc = pred['loc_col'].cpu()
+                    outc_ext = pred['exist_col'].cpu()
+                    gridc = torch.arange(outc.shape[1]) + 0.5
+                    gridc = gridc.view(1,-1,1,1)
+                    locc = (outc.softmax(1) * gridc).sum(1)
+                    locc = locc / (outc.shape[1]-1) * (H - 1)
+                    validc = outc_ext.argmax(1).cpu()
+                    num_cls_c = validc.shape[1]
+                    num_lane_c = validc.shape[2]
+                    for k in range(num_cls_c):
+                        if col_anchor is not None:
+                            x_anchor = col_anchor[k] * (W - 1)
+                        else:
+                            x_anchor = (culane_col_anchor[k] / 800.0) * (W - 1)
+                        for lane_idx in range(num_lane_c):
+                            if validc[0,k,lane_idx]:
+                                y = float(locc[0,k,lane_idx])
+                                pts.append(('col', (x_anchor, y)))
+
+                # draw using matplotlib and log
+                import matplotlib.pyplot as plt
+                fig = plt.figure(figsize=(6,4))
+                ax = fig.add_subplot(1,1,1)
+                # draw image as background (lowest zorder)
+                disp_img = img_vis
+                # prepare a robust uint8 RGB image and apply conservative BGR->RGB heuristic
+                disp_img_show = _prepare_disp_img(disp_img)
+                ax.imshow(disp_img_show, zorder=0, interpolation='nearest')
+                ax.axis('off')
+                for t,p in pts:
+                    x,y = p
+                    if t == 'row':
+                        ax.plot(x, y, 'ro', markersize=4, zorder=2)
+                    else:
+                        ax.plot(x, y, 'bx', markersize=4, zorder=2)
+                logger.add_figure('eval/input_with_pred', fig, i)
+                plt.close(fig)
+                # Quick debug summary for diagnosis: print sample pts and simple stats
+                try:
+                    # only print from main process
+                    if is_main_process():
+                        col_ys = [p[1] for t,p in pts if t == 'col']
+                        row_ys = [p[1] for t,p in pts if t == 'row']
+                        dist_print(f"[eval vis] sample pts (first 10): {pts[:10]}")
+                        if len(col_ys) > 0:
+                            col_min, col_max = min(col_ys), max(col_ys)
+                            distinct_col = len(set([int(round(v)) for v in col_ys]))
+                            dist_print(f"[eval vis] col y -> min:{col_min:.1f} max:{col_max:.1f} distinct_px:{distinct_col}")
+                        if len(row_ys) > 0:
+                            row_min, row_max = min(row_ys), max(row_ys)
+                            distinct_row = len(set([int(round(v)) for v in row_ys]))
+                            dist_print(f"[eval vis] row y -> min:{row_min:.1f} max:{row_max:.1f} distinct_px:{distinct_row}")
+                except Exception:
+                    pass
+        except Exception:
+            pass
         # debug: print shapes of prediction tensors on first batch to help diagnose mismatch
         if i == 0 and is_main_process():
             try:
@@ -564,6 +735,217 @@ def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_rati
         else:
             raise NotImplementedError
 
+        # Additionally, visualise the generated lines.txt (predicted lanes) over the image
+        # This shows exactly the files used by the evaluator. Only run in main process and when a
+        # TensorBoard logger is provided.
+        if logger is not None and is_main_process() and (i % 20 == 0):
+            try:
+                # reuse the same precomputed display image if present
+                if img_vis_shared is not None and disp_img_show_shared is not None:
+                    img_vis = img_vis_shared
+                    disp_img_show = disp_img_show_shared
+                    H, W = img_vis.shape[:2]
+                else:
+                    # rebuild display image (undo normalize)
+                    img = imgs[0].cpu().numpy()
+                    if img.ndim == 3:
+                        img = np.transpose(img, (1,2,0))
+                    mean = np.array([0.485, 0.456, 0.406])
+                    std = np.array([0.229, 0.224, 0.225])
+                    img_vis = (img * std[None,None,:]) + mean[None,None,:]
+                    img_vis = np.clip(img_vis, 0, 1)
+                    H, W = img_vis.shape[:2]
+
+                # path to the lines file for the first image in the batch
+                line_path = os.path.join(output_path, names[0][:-3] + 'lines.txt')
+                if os.path.exists(line_path):
+                    with open(line_path, 'r') as lf:
+                        lines = lf.readlines()
+                    # try to load an optional GT mask corresponding to this image
+                    # (some datasets provide pixel-level masks; this is optional)
+                    mask = None
+                    try:
+                        mask = _try_load_mask(data_root, names[0], H, W)
+                        if mask is not None:
+                            dist_print(f"[eval vis] loaded GT mask for {names[0]} (uniq={len(np.unique(mask))})")
+                    except Exception:
+                        mask = None
+                    # Try to load GT lines file that should be co-located with the image
+                    # (same path but with extension 'lines.txt'), and draw those polylines
+                    # in yellow so you can compare GT (yellow) vs predicted lines (green).
+                    import matplotlib.pyplot as plt
+                    fig = plt.figure(figsize=(6,4))
+                    ax = fig.add_subplot(1,1,1)
+                    # ensure the image is drawn underneath the line overlays
+                    disp_img = img_vis
+                    # prepare a robust uint8 RGB image (do not force channel swap here;
+                    # `eval/input_with_pred` uses the same helper without forcing and
+                    # that shows the image correctly for the user's dataset)
+                    disp_img_show = _prepare_disp_img(disp_img)
+                    # quick diagnostics: write out the exact array used for TensorBoard so
+                    # you can open it locally and confirm the raw image is correct
+                    try:
+                        # always write a diagnostic image with batch index and timestamp so
+                        # the file is easy to find and inspect locally
+                        # sanitize the name so it cannot contain path separators
+                        safe_name = names[0][:-3].replace('/', '_').replace('\\', '_')
+                        dbg_name = f"debug_img_{safe_name}_batch{i}_{int(time.time())}.png"
+                        dbg_path = os.path.join(output_path, dbg_name)
+                        # ensure output directory exists (output_path should already exist,
+                        # but be defensive if a nested path sneaks in)
+                        os.makedirs(os.path.dirname(dbg_path), exist_ok=True)
+                        from PIL import Image as PILImage
+                        PILImage.fromarray(disp_img_show).save(dbg_path)
+                        dist_print(f"[eval vis lines] wrote debug image {dbg_path} (dtype={disp_img_show.dtype} shape={disp_img_show.shape} min={disp_img_show.min()} max={disp_img_show.max()})")
+                    except Exception as e:
+                        dist_print(f"[eval vis lines] failed to write debug image: {e}")
+                    ax.imshow(disp_img_show, zorder=0, interpolation='nearest')
+                    ax.axis('off')
+                    try:
+                        gt_line_path = os.path.join(data_root, names[0][:-3] + 'lines.txt')
+                        gt_count = 0
+                        if os.path.exists(gt_line_path):
+                            with open(gt_line_path, 'r') as gfl:
+                                gt_lines = gfl.readlines()
+                            for ln in gt_lines:
+                                xs, ys = coordinate_parse(ln)
+                                if len(xs) == 0:
+                                    continue
+                                # scale from original image space (1640x590) to display
+                                xs_resized = [ (float(x) / 1640.0) * (W - 1) for x in xs ]
+                                ys_resized = [ (float(y) / 590.0) * (H - 1) for y in ys ]
+                                ax.plot(xs_resized, ys_resized, '-', color='y', linewidth=2, zorder=3)
+                                ax.plot(xs_resized, ys_resized, 'y.', markersize=4, zorder=4)
+                                gt_count += 1
+                            dist_print(f"[eval vis] loaded GT lines for {names[0]} (lines={gt_count})")
+                    except Exception:
+                        pass
+                    for ln in lines:
+                        xs, ys = coordinate_parse(ln)
+                        if len(xs) == 0:
+                            continue
+                        # lines.txt coordinates are in original image space (1640x590)
+                        xs_resized = [ (x / 1640.0) * (W - 1) for x in xs ]
+                        ys_resized = [ (y / 590.0) * (H - 1) for y in ys ]
+                        ax.plot(xs_resized, ys_resized, '-g', linewidth=2, label='pred', zorder=3)
+                        ax.plot(xs_resized, ys_resized, 'go', markersize=3, zorder=4)
+                        # if GT mask exists, optionally draw overlay points for GT lanes
+                        # but only when the mask is sparse; dense masks will otherwise
+                        # completely cover the image and make the background invisible.
+                        if mask is not None:
+                            try:
+                                ys_gt, xs_gt = np.where(mask > 0)
+                                num_mask_pts = len(xs_gt)
+                                # threshold: only plot when reasonably sparse
+                                SPARSE_MASK_THRESHOLD = 3000
+                                if num_mask_pts > 0 and num_mask_pts <= SPARSE_MASK_THRESHOLD:
+                                    xs_gt_res = xs_gt.astype(float)
+                                    ys_gt_res = ys_gt.astype(float)
+                                    # sparse mask: scatter is fine
+                                    ax.scatter(xs_gt_res, ys_gt_res, c='c', s=1, alpha=0.6, zorder=1)
+                                elif num_mask_pts > SPARSE_MASK_THRESHOLD:
+                                    # dense mask: drawing per-pixel scatter will accumulate opacity and
+                                    # completely hide the background. Use imshow with a small alpha
+                                    # for a faint overlay that preserves the image underneath.
+                                    try:
+                                        mask_overlay = (mask > 0).astype(float)
+                                        ax.imshow(mask_overlay, cmap='copper', alpha=0.12, zorder=1, interpolation='nearest')
+                                        dist_print(f"[eval vis] GT mask dense ({num_mask_pts} pixels); drawing with imshow low-alpha")
+                                    except Exception:
+                                        dist_print(f"[eval vis] GT mask dense; failed to draw low-alpha mask")
+                            except Exception:
+                                pass
+                    logger.add_figure('eval/input_with_lines', fig, i)
+                    plt.close(fig)
+            except Exception:
+                pass
+
+        # Diagnostic check: compare predicted points (from tensors) vs coordinates written
+        # in the .lines.txt file for the first image in batch. This verifies what the
+        # evaluator will read matches the in-memory predictions.
+        try:
+            if is_main_process() and logger is not None and (i % 20 == 0):
+                # rebuild the predicted points list (same logic as earlier)
+                pred_pts = []
+                if 'loc_row' in pred and 'exist_row' in pred:
+                    out = pred['loc_row'].cpu()
+                    out_ext = pred['exist_row'].cpu()
+                    grid = torch.arange(out.shape[1]) + 0.5
+                    grid = grid.view(1,-1,1,1)
+                    loc = (out.softmax(1) * grid).sum(1)
+                    loc = loc / (out.shape[1]-1) * (W - 1)
+                    valid = out_ext.argmax(1).cpu()
+                    num_cls = valid.shape[1]
+                    num_lane = valid.shape[2]
+                    for k in range(num_cls):
+                        if row_anchor is not None:
+                            y = row_anchor[k] * (H - 1)
+                        else:
+                            y = (culane_row_anchor[k] / 288.0) * (H - 1)
+                        for lane_idx in range(num_lane):
+                            if valid[0,k,lane_idx]:
+                                x = float(loc[0,k,lane_idx])
+                                pred_pts.append((float(x), float(y)))
+                if 'loc_col' in pred and 'exist_col' in pred:
+                    outc = pred['loc_col'].cpu()
+                    outc_ext = pred['exist_col'].cpu()
+                    gridc = torch.arange(outc.shape[1]) + 0.5
+                    gridc = gridc.view(1,-1,1,1)
+                    locc = (outc.softmax(1) * gridc).sum(1)
+                    locc = locc / (outc.shape[1]-1) * (H - 1)
+                    validc = outc_ext.argmax(1).cpu()
+                    num_cls_c = validc.shape[1]
+                    num_lane_c = validc.shape[2]
+                    for k in range(num_cls_c):
+                        if col_anchor is not None:
+                            x_anchor = col_anchor[k] * (W - 1)
+                        else:
+                            x_anchor = (culane_col_anchor[k] / 800.0) * (W - 1)
+                        for lane_idx in range(num_lane_c):
+                            if validc[0,k,lane_idx]:
+                                y = float(locc[0,k,lane_idx])
+                                pred_pts.append((float(x_anchor), float(y)))
+
+                # Read points from file (scaled to display W,H)
+                line_path = os.path.join(output_path, names[0][:-3] + 'lines.txt')
+                file_pts = []
+                if os.path.exists(line_path):
+                    with open(line_path, 'r') as lf:
+                        for ln in lf.readlines():
+                            xs, ys = coordinate_parse(ln)
+                            for x,y in zip(xs, ys):
+                                # file coordinates are in original 1640x590 space
+                                xr = (float(x) / 1640.0) * (W - 1)
+                                yr = (float(y) / 590.0) * (H - 1)
+                                file_pts.append((xr, yr))
+
+                # compare sets: for each file point find nearest pred point
+                import math, json
+                diag = {'image': names[0], 'num_pred_pts': len(pred_pts), 'num_file_pts': len(file_pts), 'pairs': []}
+                if len(file_pts) > 0 and len(pred_pts) > 0:
+                    pred_arr = np.array(pred_pts)
+                    for (fx,fy) in file_pts:
+                        dists = np.sqrt(np.sum((pred_arr - np.array([fx,fy]))**2, axis=1))
+                        min_d = float(dists.min())
+                        argmin = int(dists.argmin())
+                        diag['pairs'].append({'file_pt': [fx,fy], 'best_pred_idx': argmin, 'pred_pt': pred_pts[argmin], 'dist': min_d})
+                    dists_all = [p['dist'] for p in diag['pairs']]
+                    diag['max_dist'] = max(dists_all)
+                    diag['mean_dist'] = float(np.mean(dists_all))
+                else:
+                    diag['max_dist'] = None
+                    diag['mean_dist'] = None
+
+                # print short summary and save JSON
+                dist_print(f"[eval diag] image={names[0]} pred_pts={len(pred_pts)} file_pts={len(file_pts)} max_dist={diag['max_dist']} mean_dist={diag['mean_dist']}")
+                try:
+                    diag_path = os.path.join(output_path, f"diag_{names[0][:-3]}.json")
+                    with open(diag_path, 'w') as df:
+                        json.dump(_sanitize_for_json(diag), df, indent=2)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
 
 def generate_lines_local_tta(loc_row, loc_row_left, loc_row_right, exist_row, exist_row_left, exist_row_right, names, output_path, row_anchor):
@@ -892,7 +1274,7 @@ def eval_lane(net, cfg, ep = None, logger = None):
     net.eval()
     if cfg.dataset == 'CurveLanes':
         if not cfg.tta:
-            run_test(cfg.dataset, net, cfg.data_root, 'curvelanes_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor = cfg.row_anchor, col_anchor = cfg.col_anchor)
+            run_test(cfg.dataset, net, cfg.data_root, 'curvelanes_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor = cfg.row_anchor, col_anchor = cfg.col_anchor, logger=logger)
         else:
             run_test_tta(cfg.dataset, net, cfg.data_root, 'curvelanes_eval_tmp', cfg.test_work_dir, cfg.distributed,  cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor = cfg.row_anchor, col_anchor = cfg.col_anchor)
         synchronize()   # wait for all results
@@ -938,7 +1320,7 @@ def eval_lane(net, cfg, ep = None, logger = None):
             return None
     elif cfg.dataset == 'CULane':
         if not cfg.tta:
-            run_test(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor = cfg.row_anchor, col_anchor = cfg.col_anchor)
+            run_test(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor = cfg.row_anchor, col_anchor = cfg.col_anchor, logger=logger)
         else:
             run_test_tta(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor = cfg.row_anchor, col_anchor = cfg.col_anchor)
         synchronize()    # wait for all results
@@ -1017,6 +1399,54 @@ def read_helper(path):
     keys = [key[:-1] for key in keys]
     res = {k : v for k,v in zip(keys,values)}
     return res
+
+
+def _sanitize_for_json(obj):
+    """Recursively convert numpy types and sanitize NaN/inf to None so json.dump won't fail.
+    Returns a JSON-serializable structure with Python primitives.
+    """
+    import math
+    # primitives
+    if obj is None:
+        return None
+    if isinstance(obj, (str, bool)):
+        return obj
+    if isinstance(obj, (int,)):
+        return obj
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    # numpy scalar types
+    try:
+        import numpy as _np
+        if isinstance(obj, _np.floating):
+            v = float(obj)
+            if math.isnan(v) or math.isinf(v):
+                return None
+            return v
+        if isinstance(obj, _np.integer):
+            return int(obj)
+    except Exception:
+        pass
+    # containers
+    if isinstance(obj, dict):
+        return {str(k): _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    # fallback: try to convert to float/int/str, else return str(obj)
+    try:
+        if hasattr(obj, 'tolist'):
+            return _sanitize_for_json(obj.tolist())
+    except Exception:
+        pass
+    try:
+        return float(obj)
+    except Exception:
+        try:
+            return int(obj)
+        except Exception:
+            return str(obj)
 
 def call_culane_eval(data_dir, exp_name,output_path):
     # helper that runs the CULane evaluator with a specified iou and returns results
@@ -1160,10 +1590,62 @@ def call_culane_eval(data_dir, exp_name,output_path):
             try:
                 summary_path = os.path.join(output_path, f"{exp_name}_eval_results.json")
                 with open(summary_path, 'w') as sf:
-                    json.dump(results, sf, indent=2)
+                    json.dump(_sanitize_for_json(results), sf, indent=2)
                 if is_main_process():
                     dist_print(f"Wrote evaluation summary to: {summary_path}")
             except Exception as e:
                 dist_print(f"Failed to write evaluation summary: {e}")
 
             return results
+    # call the inner helper for the IOU thresholds we want and return both results
+    try:
+        res_03 = _call_with_iou(0.3)
+    except Exception as e:
+        dist_print(f"call_culane_eval: evaluator failed for IOU=0.3: {e}")
+        res_03 = None
+    try:
+        res_05 = _call_with_iou(0.5)
+    except Exception as e:
+        dist_print(f"call_culane_eval: evaluator failed for IOU=0.5: {e}")
+        res_05 = None
+
+    results = {}
+    results['0.3'] = res_03
+    results['0.5'] = res_05
+    return results
+
+
+def _try_load_mask(data_root, img_name, H=None, W=None):
+    """Attempt to locate and load a mask corresponding to img_name under data_root.
+    Returns a 2D numpy array or None.
+    """
+    dirname = os.path.dirname(img_name)
+    basename = os.path.basename(img_name)
+    name_no_ext = os.path.splitext(basename)[0]
+    candidates = [
+        os.path.join(data_root, dirname, name_no_ext + '.png'),
+        os.path.join(data_root, dirname, name_no_ext + '.jpg'),
+        os.path.join(data_root, dirname, name_no_ext + '_mask.png'),
+        os.path.join(data_root, dirname, name_no_ext + '_label.png'),
+        os.path.join(data_root, 'mask', name_no_ext + '.png'),
+        os.path.join(data_root, 'label', name_no_ext + '.png'),
+        os.path.join(data_root, basename.replace('.jpg', '.png')),
+        os.path.join(data_root, basename.replace('.jpg', '_mask.png')),
+    ]
+    for p in candidates:
+        try:
+            if not os.path.exists(p):
+                continue
+            if p.endswith('.npy'):
+                arr = np.load(p)
+            else:
+                pil = Image.open(p).convert('L')
+                if H is not None and W is not None and pil.size != (W, H):
+                    pil = pil.resize((W, H), Image.NEAREST)
+                arr = np.asarray(pil)
+            if arr.ndim == 3:
+                arr = arr[:, :, 0]
+            return arr
+        except Exception:
+            continue
+    return None
