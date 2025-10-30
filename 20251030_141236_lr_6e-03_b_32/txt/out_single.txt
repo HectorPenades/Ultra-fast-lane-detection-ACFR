@@ -1,0 +1,6 @@
+file: 20251030_141236_lr_6e-03_b_32/txt/out_single.txt
+tp: 0 fp: 18718 fn: 7835
+precision: 0
+recall: 0
+Fmeasure: -nan
+
