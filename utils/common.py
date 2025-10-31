@@ -108,9 +108,18 @@ def save_model(net, optimizer, epoch,save_path, distributed):
         model_state_dict = net.state_dict()
         state = {'model': model_state_dict, 'optimizer': optimizer.state_dict()}
         # state = {'model': model_state_dict}
-        assert os.path.exists(save_path)
-        model_path = os.path.join(save_path, 'model_best.pth')
+        # Ensure the save directory (and a checkpoints subfolder) exists.
+        # Save checkpoints under <save_path>/checkpoints so logs stay at the
+        # top-level work dir and model files are grouped separately.
+        os.makedirs(save_path, exist_ok=True)
+        ckpt_dir = os.path.join(save_path, 'checkpoints')
+        os.makedirs(ckpt_dir, exist_ok=True)
+        model_path = os.path.join(ckpt_dir, 'model_best.pth')
         torch.save(state, model_path)
+        try:
+            dist_print(f"Saved checkpoint to: {model_path}")
+        except Exception:
+            pass
 
 import pathspec
 

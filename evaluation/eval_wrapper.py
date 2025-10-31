@@ -9,6 +9,28 @@ from scipy.optimize import leastsq
 import time
 from data.constant import culane_col_anchor, culane_row_anchor
 from PIL import Image
+import matplotlib
+
+# Use a non-interactive backend to avoid Tkinter-related crashes when workers
+# or non-main threads create figures. Agg is a safe choice for saving images.
+matplotlib.use('Agg')
+
+# Enable/disable verbose evaluation debug prints. Default: off. Can be set
+# via environment variable UFLD_EVAL_DEBUG=1 or by setting cfg.eval_debug
+# (True/False) before calling `eval_lane`.
+import os as _os
+EVAL_DEBUG = _os.environ.get('UFLD_EVAL_DEBUG', '0') == '1'
+
+def eprint(*args, **kwargs):
+    """Conditional wrapper around dist_print used for noisy evaluation debug.
+    Use `EVAL_DEBUG = True` to enable these messages.
+    """
+    if EVAL_DEBUG:
+        try:
+            dist_print(*args, **kwargs)
+        except Exception:
+            # Best-effort printing; don't raise from debug logger
+            pass
 
 
 def _prepare_disp_img(img_vis, force_swap=False):
@@ -38,19 +60,19 @@ def _prepare_disp_img(img_vis, force_swap=False):
         r_mean = float(arr[..., 0].mean())
         g_mean = float(arr[..., 1].mean())
         b_mean = float(arr[..., 2].mean())
-        dist_print(f"[eval vis] img channel means R:{r_mean:.1f} G:{g_mean:.1f} B:{b_mean:.1f}")
+        eprint(f"[eval vis] img channel means R:{r_mean:.1f} G:{g_mean:.1f} B:{b_mean:.1f}")
         if force_swap:
-            dist_print("[eval vis] force-swap enabled: swapping channels for display (BGR->RGB)")
+            eprint("[eval vis] force-swap enabled: swapping channels for display (BGR->RGB)")
             arr = arr[..., ::-1]
         else:
             # Auto-swap is disabled by default to avoid incorrectly swapping RGB images.
             # We still log strong channel imbalances so you can decide to force-swap.
             if g_mean > r_mean * 1.5 and g_mean > b_mean * 1.5:
-                dist_print("[eval vis] channel means suggest green-dominant image (possible BGR)." +
-                           " If the image appears wrong, call _prepare_disp_img(..., force_swap=True).")
+                eprint("[eval vis] channel means suggest green-dominant image (possible BGR)." +
+                       " If the image appears wrong, call _prepare_disp_img(..., force_swap=True).")
             elif b_mean > r_mean * 1.5 and b_mean > g_mean * 1.5:
-                dist_print("[eval vis] channel means suggest blue-dominant image (possible BGR)." +
-                           " If the image appears wrong, call _prepare_disp_img(..., force_swap=True).")
+                eprint("[eval vis] channel means suggest blue-dominant image (possible BGR)." +
+                       " If the image appears wrong, call _prepare_disp_img(..., force_swap=True).")
     except Exception:
         pass
 
@@ -696,15 +718,15 @@ def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_rati
                     if is_main_process():
                         col_ys = [p[1] for t,p in pts if t == 'col']
                         row_ys = [p[1] for t,p in pts if t == 'row']
-                        dist_print(f"[eval vis] sample pts (first 10): {pts[:10]}")
+                        eprint(f"[eval vis] sample pts (first 10): {pts[:10]}")
                         if len(col_ys) > 0:
                             col_min, col_max = min(col_ys), max(col_ys)
                             distinct_col = len(set([int(round(v)) for v in col_ys]))
-                            dist_print(f"[eval vis] col y -> min:{col_min:.1f} max:{col_max:.1f} distinct_px:{distinct_col}")
+                            eprint(f"[eval vis] col y -> min:{col_min:.1f} max:{col_max:.1f} distinct_px:{distinct_col}")
                         if len(row_ys) > 0:
                             row_min, row_max = min(row_ys), max(row_ys)
                             distinct_row = len(set([int(round(v)) for v in row_ys]))
-                            dist_print(f"[eval vis] row y -> min:{row_min:.1f} max:{row_max:.1f} distinct_px:{distinct_row}")
+                            eprint(f"[eval vis] row y -> min:{row_min:.1f} max:{row_max:.1f} distinct_px:{distinct_row}")
                 except Exception:
                     pass
         except Exception:
@@ -716,14 +738,14 @@ def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_rati
                 er = pred.get('exist_row')
                 dc = pred.get('loc_col')
                 ec = pred.get('exist_col')
-                dist_print('Pred shapes: loc_row {}, exist_row {}, loc_col {}, exist_col {}'.format(
+                eprint('Pred shapes: loc_row {}, exist_row {}, loc_col {}, exist_col {}'.format(
                     None if dr is None else tuple(dr.shape),
                     None if er is None else tuple(er.shape),
                     None if dc is None else tuple(dc.shape),
                     None if ec is None else tuple(ec.shape)
                 ))
             except Exception:
-                dist_print('Could not read pred shapes for debug')
+                eprint('Could not read pred shapes for debug')
         
         if dataset == "CULane":
             generate_lines_local(dataset, pred['loc_row'],pred['exist_row'], names, output_path, 'normal', row_anchor=row_anchor)
@@ -767,7 +789,7 @@ def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_rati
                     try:
                         mask = _try_load_mask(data_root, names[0], H, W)
                         if mask is not None:
-                            dist_print(f"[eval vis] loaded GT mask for {names[0]} (uniq={len(np.unique(mask))})")
+                            eprint(f"[eval vis] loaded GT mask for {names[0]} (uniq={len(np.unique(mask))})")
                     except Exception:
                         mask = None
                     # Try to load GT lines file that should be co-located with the image
@@ -796,9 +818,9 @@ def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_rati
                         os.makedirs(os.path.dirname(dbg_path), exist_ok=True)
                         from PIL import Image as PILImage
                         PILImage.fromarray(disp_img_show).save(dbg_path)
-                        dist_print(f"[eval vis lines] wrote debug image {dbg_path} (dtype={disp_img_show.dtype} shape={disp_img_show.shape} min={disp_img_show.min()} max={disp_img_show.max()})")
+                        eprint(f"[eval vis lines] wrote debug image {dbg_path} (dtype={disp_img_show.dtype} shape={disp_img_show.shape} min={disp_img_show.min()} max={disp_img_show.max()})")
                     except Exception as e:
-                        dist_print(f"[eval vis lines] failed to write debug image: {e}")
+                        eprint(f"[eval vis lines] failed to write debug image: {e}")
                     ax.imshow(disp_img_show, zorder=0, interpolation='nearest')
                     ax.axis('off')
                     try:
@@ -817,7 +839,7 @@ def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_rati
                                 ax.plot(xs_resized, ys_resized, '-', color='y', linewidth=2, zorder=3)
                                 ax.plot(xs_resized, ys_resized, 'y.', markersize=4, zorder=4)
                                 gt_count += 1
-                            dist_print(f"[eval vis] loaded GT lines for {names[0]} (lines={gt_count})")
+                            eprint(f"[eval vis] loaded GT lines for {names[0]} (lines={gt_count})")
                     except Exception:
                         pass
                     for ln in lines:
@@ -850,9 +872,9 @@ def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_rati
                                     try:
                                         mask_overlay = (mask > 0).astype(float)
                                         ax.imshow(mask_overlay, cmap='copper', alpha=0.12, zorder=1, interpolation='nearest')
-                                        dist_print(f"[eval vis] GT mask dense ({num_mask_pts} pixels); drawing with imshow low-alpha")
+                                        eprint(f"[eval vis] GT mask dense ({num_mask_pts} pixels); drawing with imshow low-alpha")
                                     except Exception:
-                                        dist_print(f"[eval vis] GT mask dense; failed to draw low-alpha mask")
+                                        eprint("[eval vis] GT mask dense; failed to draw low-alpha mask")
                             except Exception:
                                 pass
                     logger.add_figure('eval/input_with_lines', fig, i)
@@ -937,7 +959,7 @@ def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_rati
                     diag['mean_dist'] = None
 
                 # print short summary and save JSON
-                dist_print(f"[eval diag] image={names[0]} pred_pts={len(pred_pts)} file_pts={len(file_pts)} max_dist={diag['max_dist']} mean_dist={diag['mean_dist']}")
+                eprint(f"[eval diag] image={names[0]} pred_pts={len(pred_pts)} file_pts={len(file_pts)} max_dist={diag['max_dist']} mean_dist={diag['mean_dist']}")
                 try:
                     diag_path = os.path.join(output_path, f"diag_{names[0][:-3]}.json")
                     with open(diag_path, 'w') as df:
@@ -1271,6 +1293,14 @@ def combine_tusimple_test(work_dir,exp_name):
     
 
 def eval_lane(net, cfg, ep = None, logger = None):
+    # Allow per-run override of noisy evaluation debug via cfg.eval_debug.
+    # If present, this will set the module-level EVAL_DEBUG flag used by eprint().
+    global EVAL_DEBUG
+    if hasattr(cfg, 'eval_debug'):
+        try:
+            EVAL_DEBUG = bool(cfg.eval_debug)
+        except Exception:
+            pass
     net.eval()
     if cfg.dataset == 'CurveLanes':
         if not cfg.tta:
@@ -1280,14 +1310,31 @@ def eval_lane(net, cfg, ep = None, logger = None):
         synchronize()   # wait for all results
         if is_main_process():
             res = call_curvelane_eval(cfg.data_root, 'curvelanes_eval_tmp', cfg.test_work_dir)
+            if res is None:
+                dist_print('call_curvelane_eval returned None (evaluator failed). Setting F=0 and continuing.')
+                if logger is not None and is_main_process():
+                    logger.add_scalar('CuEval/total', 0.0, global_step = ep)
+                synchronize()
+                if is_main_process():
+                    return 0.0
+                else:
+                    return None
             TP,FP,FN = 0,0,0
             for k, v in res.items():
-                val = float(v['Fmeasure']) if 'nan' not in v['Fmeasure'] else 0
-                val_tp,val_fp,val_fn = int(v['tp']),int(v['fp']),int(v['fn'])
+                # defensively read Fmeasure: evaluator output may omit or return 'nan'
+                fmeasure_raw = v.get('Fmeasure') if isinstance(v, dict) else None
+                try:
+                    if fmeasure_raw is None or 'nan' in str(fmeasure_raw):
+                        val = 0.0
+                    else:
+                        val = float(fmeasure_raw)
+                except Exception:
+                    val = 0.0
+                val_tp,val_fp,val_fn = int(v.get('tp', 0)),int(v.get('fp', 0)),int(v.get('fn', 0))
                 TP += val_tp
                 FP += val_fp
                 FN += val_fn
-                dist_print(k,val)
+                eprint(k, val)
                 if logger is not None:
                     if k == 'res_cross':
                         logger.add_scalar('CuEval_cls/'+k,val_fp,global_step = ep)
@@ -1307,11 +1354,16 @@ def eval_lane(net, cfg, ep = None, logger = None):
                 F = 0
             else:
                 F = 2*P*R/(P + R)
-            dist_print(F)
+            eprint(F)
             if logger is not None:
                 logger.add_scalar('CuEval/total',F,global_step = ep)
                 logger.add_scalar('CuEval/P',P,global_step = ep)
                 logger.add_scalar('CuEval/R',R,global_step = ep)
+                # Append per-epoch history (one line per epoch) so we keep an audit trail
+                try:
+                    _append_eval_history(cfg, ep, {'P': P, 'R': R, 'F': F, 'per_class': res}, dataset_name='CurveLanes', logger=logger)
+                except Exception:
+                    pass
               
         synchronize()
         if is_main_process():
@@ -1329,15 +1381,26 @@ def eval_lane(net, cfg, ep = None, logger = None):
             # res_both is a dict {'0.3': res_03, '0.5': res_05}
             # Log both results (0.3 and 0.5). Keep compatibility: return F for 0.5.
             for iou_key in ['0.3', '0.5']:
-                res = res_both[iou_key]
+                res = res_both.get(iou_key) if isinstance(res_both, dict) else None
+                if res is None:
+                    dist_print(f'call_culane_eval returned None for IOU={iou_key} (evaluator failed). Skipping this IOU result.')
+                    continue
                 TP,FP,FN = 0,0,0
                 for k, v in res.items():
-                    val = float(v['Fmeasure']) if 'nan' not in v['Fmeasure'] else 0
-                    val_tp,val_fp,val_fn = int(v['tp']),int(v['fp']),int(v['fn'])
+                    # defensively read Fmeasure: evaluator output may omit or return 'nan'
+                    fmeasure_raw = v.get('Fmeasure') if isinstance(v, dict) else None
+                    try:
+                        if fmeasure_raw is None or 'nan' in str(fmeasure_raw):
+                            val = 0.0
+                        else:
+                            val = float(fmeasure_raw)
+                    except Exception:
+                        val = 0.0
+                    val_tp,val_fp,val_fn = int(v.get('tp', 0)),int(v.get('fp', 0)),int(v.get('fn', 0))
                     TP += val_tp
                     FP += val_fp
                     FN += val_fn
-                    dist_print(f"IOU={iou_key} ", k, val)
+                    eprint(f"IOU={iou_key} ", k, val)
                     if logger is not None:
                         if k == 'res_cross':
                             logger.add_scalar(f'CuEval_cls/{iou_key}/'+k,val_fp,global_step = ep)
@@ -1363,6 +1426,11 @@ def eval_lane(net, cfg, ep = None, logger = None):
                     logger.add_scalar(f'CuEval/{iou_key}/P',P,global_step = ep)
                     logger.add_scalar(f'CuEval/{iou_key}/R',R,global_step = ep)
             # return the 0.5-F score to keep behavior consistent (F currently holds 0.5 result)
+            # persist epoch history (both IOU results plus summary F for 0.5)
+            try:
+                _append_eval_history(cfg, ep, {'iou_results': res_both, 'F_0.5': F}, dataset_name='CULane', logger=logger)
+            except Exception:
+                pass
             return F
               
         synchronize()
@@ -1386,6 +1454,12 @@ def eval_lane(net, cfg, ep = None, logger = None):
         if is_main_process():
             for r in res:
                 if r['name'] == 'F1':
+                    # append epoch history for Tusimple
+                    try:
+                        metrics = {it['name']: it['value'] for it in res}
+                        _append_eval_history(cfg, ep, {'metrics': metrics}, dataset_name='Tusimple', logger=logger)
+                    except Exception:
+                        pass
                     return r['value']
         else:
             return None
@@ -1447,6 +1521,48 @@ def _sanitize_for_json(obj):
             return int(obj)
         except Exception:
             return str(obj)
+
+
+def _append_eval_history(cfg, ep, results_dict, dataset_name=None, logger=None):
+    """Append a JSON line with evaluation results to a persistent history file.
+    - cfg: config object; uses cfg.test_work_dir as destination directory
+    - ep: epoch number (may be None)
+    - results_dict: dict with results (will be sanitized for JSON)
+    - dataset_name: optional string for easy filtering
+    - logger: optional tensorboard logger (will receive a summary scalar 'Eval/F' when present)
+    """
+    try:
+        out_dir = getattr(cfg, 'test_work_dir', None) or '.'
+        if not os.path.exists(out_dir) and is_main_process():
+            os.makedirs(out_dir, exist_ok=True)
+        hist_path = os.path.join(out_dir, 'eval_history.jsonl')
+        entry = {
+            'timestamp': time.time(),
+            'epoch': ep if ep is not None else -1,
+            'dataset': dataset_name,
+            'results': results_dict
+        }
+        with open(hist_path, 'a') as hf:
+            json.dump(_sanitize_for_json(entry), hf)
+            hf.write('\n')
+        if is_main_process():
+            dist_print(f"Appended eval results to: {hist_path}")
+    except Exception as e:
+        dist_print(f"Failed to append eval history: {e}")
+
+    # Additionally, add a lightweight TensorBoard summary if provided
+    try:
+        if logger is not None:
+            # prefer explicit keys
+            if isinstance(results_dict, dict):
+                if 'F' in results_dict:
+                    logger.add_scalar('Eval/F', float(results_dict['F']), global_step=ep)
+                elif 'F_0.5' in results_dict:
+                    logger.add_scalar('Eval/F', float(results_dict['F_0.5']), global_step=ep)
+                elif 'metrics' in results_dict and isinstance(results_dict['metrics'], dict) and 'F1' in results_dict['metrics']:
+                    logger.add_scalar('Eval/F', float(results_dict['metrics']['F1']), global_step=ep)
+    except Exception:
+        pass
 
 def call_culane_eval(data_dir, exp_name,output_path):
     # helper that runs the CULane evaluator with a specified iou and returns results
@@ -1511,92 +1627,25 @@ def call_culane_eval(data_dir, exp_name,output_path):
             return res_all
         else:
             # Fallback: if test_split doesn't exist, use the single test list (list/test.txt)
+            # Run the evaluator once for the requested `iou_val` and return a per-split
+            # mapping where every split key maps to the single-result read from the
+            # evaluator output. This avoids executing the evaluator multiple times
+            # (the previous implementation could run the evaluator repeatedly).
             list_file = os.path.join(dd, 'list', 'test.txt')
-            if not os.path.exists(os.path.join(output_path,'txt')):
-                os.mkdir(os.path.join(output_path,'txt'))
-            out_single = os.path.join(output_path,'txt','out_single.txt')
-            os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s'%(eval_cmd,dd,detect_dir,dd,list_file,w_lane,iou,im_w,im_h,frame,out_single))
-            res = read_helper(out_single)
-            # populate res_all with the single result under res_normal (and copy to others for compatibility)
-            res_all = {}
-            w_lane = 30
-            im_w = 1640
-            im_h = 590
-            frame = 1
-            split_dir = os.path.join(data_dir, 'list', 'test_split')
-            eval_cmd = './evaluation/culane/evaluate'
-            if platform.system() == 'Windows':
-                eval_cmd = eval_cmd.replace('/', os.sep)
-
-            # Run the evaluator for two IOU thresholds (0.3 and 0.5) using the same detection files
-            results = {}
-            for iou in [0.3, 0.5]:
-                # prepare output files for this iou
-                if os.path.exists(split_dir):
-                    list_files = [
-                        os.path.join(data_dir,'list/test_split/test0_normal.txt'),
-                        os.path.join(data_dir,'list/test_split/test1_crowd.txt'),
-                        os.path.join(data_dir,'list/test_split/test2_hlight.txt'),
-                        os.path.join(data_dir,'list/test_split/test3_shadow.txt'),
-                        os.path.join(data_dir,'list/test_split/test4_noline.txt'),
-                        os.path.join(data_dir,'list/test_split/test5_arrow.txt'),
-                        os.path.join(data_dir,'list/test_split/test6_curve.txt'),
-                        os.path.join(data_dir,'list/test_split/test7_cross.txt'),
-                        os.path.join(data_dir,'list/test_split/test8_night.txt')
-                    ]
-                    if not os.path.exists(os.path.join(output_path,'txt')):
-                        os.mkdir(os.path.join(output_path,'txt'))
-                    out_files = [
-                        os.path.join(output_path,'txt',f'out0_normal_{int(iou*10)}.txt'),
-                        os.path.join(output_path,'txt',f'out1_crowd_{int(iou*10)}.txt'),
-                        os.path.join(output_path,'txt',f'out2_hlight_{int(iou*10)}.txt'),
-                        os.path.join(output_path,'txt',f'out3_shadow_{int(iou*10)}.txt'),
-                        os.path.join(output_path,'txt',f'out4_noline_{int(iou*10)}.txt'),
-                        os.path.join(output_path,'txt',f'out5_arrow_{int(iou*10)}.txt'),
-                        os.path.join(output_path,'txt',f'out6_curve_{int(iou*10)}.txt'),
-                        os.path.join(output_path,'txt',f'out7_cross_{int(iou*10)}.txt'),
-                        os.path.join(output_path,'txt',f'out8_night_{int(iou*10)}.txt')
-                    ]
-
-                    # call evaluator for each split file
-                    for lf, of in zip(list_files, out_files):
-                        cmd = '%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s' % (eval_cmd, data_dir, detect_dir, data_dir, lf, w_lane, iou, im_w, im_h, frame, of)
-                        os.system(cmd)
-
-                    res_all = {}
-                    res_all['res_normal'] = read_helper(out_files[0])
-                    res_all['res_crowd']= read_helper(out_files[1])
-                    res_all['res_night']= read_helper(out_files[8])
-                    res_all['res_noline'] = read_helper(out_files[4])
-                    res_all['res_shadow'] = read_helper(out_files[3])
-                    res_all['res_arrow']= read_helper(out_files[5])
-                    res_all['res_hlight'] = read_helper(out_files[2])
-                    res_all['res_curve']= read_helper(out_files[6])
-                    res_all['res_cross']= read_helper(out_files[7])
-                    results[str(iou)] = res_all
-                else:
-                    # Fallback: evaluate single test list
-                    list_file = os.path.join(data_dir, 'list', 'test.txt')
-                    if not os.path.exists(os.path.join(output_path,'txt')):
-                        os.mkdir(os.path.join(output_path,'txt'))
-                    out_single = os.path.join(output_path,'txt',f'out_single_{int(iou*10)}.txt')
-                    cmd = '%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s' % (eval_cmd, data_dir, detect_dir, data_dir, list_file, w_lane, iou, im_w, im_h, frame, out_single)
-                    os.system(cmd)
-                    res = read_helper(out_single)
-                    res_all = {k: res for k in ['res_normal','res_crowd','res_night','res_noline','res_shadow','res_arrow','res_hlight','res_curve','res_cross']}
-                    results[str(iou)] = res_all
-
-            # persist a summary JSON with both IOU results for easy inspection
+            if not os.path.exists(os.path.join(output_path, 'txt')):
+                os.mkdir(os.path.join(output_path, 'txt'))
+            out_single = os.path.join(output_path, 'txt', f'out_single_{int(iou_val*10)}.txt')
+            cmd = '%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s' % (
+                eval_cmd, dd, detect_dir, dd, list_file, w_lane, iou_val, im_w, im_h, frame, out_single)
+            os.system(cmd)
             try:
-                summary_path = os.path.join(output_path, f"{exp_name}_eval_results.json")
-                with open(summary_path, 'w') as sf:
-                    json.dump(_sanitize_for_json(results), sf, indent=2)
-                if is_main_process():
-                    dist_print(f"Wrote evaluation summary to: {summary_path}")
-            except Exception as e:
-                dist_print(f"Failed to write evaluation summary: {e}")
-
-            return results
+                res = read_helper(out_single)
+            except Exception:
+                # Evaluator failed to produce output we can parse
+                return None
+            # Populate a per-split dict where each expected split key maps to the same result
+            res_all = {k: res for k in ['res_normal', 'res_crowd', 'res_night', 'res_noline', 'res_shadow', 'res_arrow', 'res_hlight', 'res_curve', 'res_cross']}
+            return res_all
     # call the inner helper for the IOU thresholds we want and return both results
     try:
         res_03 = _call_with_iou(0.3)
@@ -1612,6 +1661,15 @@ def call_culane_eval(data_dir, exp_name,output_path):
     results = {}
     results['0.3'] = res_03
     results['0.5'] = res_05
+    # Persist a combined summary JSON for easier inspection (best-effort)
+    try:
+        summary_path = os.path.join(output_path, f"{exp_name}_eval_results.json")
+        with open(summary_path, 'w') as sf:
+            json.dump(_sanitize_for_json(results), sf, indent=2)
+        if is_main_process():
+            dist_print(f"Wrote evaluation summary to: {summary_path}")
+    except Exception as e:
+        dist_print(f"Failed to write evaluation summary: {e}")
     return results
 
 
