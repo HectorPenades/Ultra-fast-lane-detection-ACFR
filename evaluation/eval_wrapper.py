@@ -1377,10 +1377,18 @@ def eval_lane(net, cfg, ep = None, logger = None):
             run_test_tta(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor = cfg.row_anchor, col_anchor = cfg.col_anchor)
         synchronize()    # wait for all results
         if is_main_process():
+            # Run the standard CULane evaluator on the generated detection folder.
             res_both = call_culane_eval(cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir)
-            # res_both is a dict {'0.3': res_03, '0.5': res_05}
-            # Log both results (0.3 and 0.5). Keep compatibility: return F for 0.5.
-            for iou_key in ['0.3', '0.5']:
+            # res_both is a dict mapping stringified IOUs (e.g. '0.3','0.4') to per-split results.
+            # Iterate over whatever IOUs the evaluator returned so we support configurable sets.
+            if not isinstance(res_both, dict):
+                dist_print('call_culane_eval returned no results (evaluator failed). Setting F=0 and continuing.')
+                if logger is not None:
+                    logger.add_scalar('CuEval/total', 0.0, global_step = ep)
+                return 0.0
+
+            per_iou_summary = {}
+            for iou_key in sorted(res_both.keys()):
                 res = res_both.get(iou_key) if isinstance(res_both, dict) else None
                 if res is None:
                     dist_print(f'call_culane_eval returned None for IOU={iou_key} (evaluator failed). Skipping this IOU result.')
@@ -1425,13 +1433,39 @@ def eval_lane(net, cfg, ep = None, logger = None):
                     logger.add_scalar(f'CuEval/{iou_key}/total',F,global_step = ep)
                     logger.add_scalar(f'CuEval/{iou_key}/P',P,global_step = ep)
                     logger.add_scalar(f'CuEval/{iou_key}/R',R,global_step = ep)
-            # return the 0.5-F score to keep behavior consistent (F currently holds 0.5 result)
-            # persist epoch history (both IOU results plus summary F for 0.5)
+                # record per-iou summary
+                try:
+                    per_iou_summary[iou_key] = {'P': P, 'R': R, 'F': F}
+                except Exception:
+                    per_iou_summary[iou_key] = {'P': None, 'R': None, 'F': None}
+
+            # determine return value: prefer 0.5 with default margin (m30) if present,
+            # else prefer any key that starts with '0.5', otherwise fall back to the
+            # last computed F in per_iou_summary.
+            final_return_F = None
+            # prefer exact 0.5_m30
+            if '0.5_m30' in per_iou_summary:
+                final_return_F = per_iou_summary['0.5_m30'].get('F')
+            else:
+                # try any 0.5 variant
+                for k in sorted(per_iou_summary.keys()):
+                    if k.startswith('0.5'):
+                        final_return_F = per_iou_summary[k].get('F')
+                        break
+            if final_return_F is None:
+                # fall back to any available F
+                for k in sorted(per_iou_summary.keys(), reverse=True):
+                    if per_iou_summary[k].get('F') is not None:
+                        final_return_F = per_iou_summary[k].get('F')
+                        break
+            if final_return_F is None:
+                final_return_F = 0.0
+            # persist epoch history (all IOU results + per-iou summary)
             try:
-                _append_eval_history(cfg, ep, {'iou_results': res_both, 'F_0.5': F}, dataset_name='CULane', logger=logger)
+                _append_eval_history(cfg, ep, {'iou_results': res_both, 'per_iou_summary': per_iou_summary, 'returned_F': final_return_F}, dataset_name='CULane', logger=logger)
             except Exception:
                 pass
-            return F
+            return final_return_F
               
         synchronize()
         if is_main_process():
@@ -1566,22 +1600,23 @@ def _append_eval_history(cfg, ep, results_dict, dataset_name=None, logger=None):
 
 def call_culane_eval(data_dir, exp_name,output_path):
     # helper that runs the CULane evaluator with a specified iou and returns results
-    def _call_with_iou(iou_val):
+    def _call_with_iou_and_margin(iou_val, w_lane):
         if data_dir[-1] != '/':
             dd = data_dir + '/'
         else:
             dd = data_dir
-        detect_dir=os.path.join(output_path,exp_name) + '/'
+        detect_dir = os.path.join(output_path, exp_name) + '/'
 
-        w_lane=30
-        iou=iou_val
-        im_w=1640
-        im_h=590
-        frame=1
+        iou = iou_val
+        im_w = 1640
+        im_h = 590
+        frame = 1
         split_dir = os.path.join(dd, 'list', 'test_split')
         eval_cmd = './evaluation/culane/evaluate'
         if platform.system() == 'Windows':
             eval_cmd = eval_cmd.replace('/', os.sep)
+
+        suffix = f"_m{int(w_lane)}_iou{int(iou_val*10)}"
 
         if os.path.exists(split_dir):
             list0 = os.path.join(dd,'list/test_split/test0_normal.txt')
@@ -1595,35 +1630,39 @@ def call_culane_eval(data_dir, exp_name,output_path):
             list8 = os.path.join(dd,'list/test_split/test8_night.txt')
             if not os.path.exists(os.path.join(output_path,'txt')):
                 os.mkdir(os.path.join(output_path,'txt'))
-            out0 = os.path.join(output_path,'txt','out0_normal.txt')
-            out1=os.path.join(output_path,'txt','out1_crowd.txt')
-            out2=os.path.join(output_path,'txt','out2_hlight.txt')
-            out3=os.path.join(output_path,'txt','out3_shadow.txt')
-            out4=os.path.join(output_path,'txt','out4_noline.txt')
-            out5=os.path.join(output_path,'txt','out5_arrow.txt')
-            out6=os.path.join(output_path,'txt','out6_curve.txt')
-            out7=os.path.join(output_path,'txt','out7_cross.txt')
-            out8=os.path.join(output_path,'txt','out8_night.txt')
+            out0 = os.path.join(output_path,'txt',f'out0_normal{suffix}.txt')
+            out1 = os.path.join(output_path,'txt',f'out1_crowd{suffix}.txt')
+            out2 = os.path.join(output_path,'txt',f'out2_hlight{suffix}.txt')
+            out3 = os.path.join(output_path,'txt',f'out3_shadow{suffix}.txt')
+            out4 = os.path.join(output_path,'txt',f'out4_noline{suffix}.txt')
+            out5 = os.path.join(output_path,'txt',f'out5_arrow{suffix}.txt')
+            out6 = os.path.join(output_path,'txt',f'out6_curve{suffix}.txt')
+            out7 = os.path.join(output_path,'txt',f'out7_cross{suffix}.txt')
+            out8 = os.path.join(output_path,'txt',f'out8_night{suffix}.txt')
 
-            os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s'%(eval_cmd,dd,detect_dir,dd,list0,w_lane,iou,im_w,im_h,frame,out0))
-            os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s'%(eval_cmd,dd,detect_dir,dd,list1,w_lane,iou,im_w,im_h,frame,out1))
-            os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s'%(eval_cmd,dd,detect_dir,dd,list2,w_lane,iou,im_w,im_h,frame,out2))
-            os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s'%(eval_cmd,dd,detect_dir,dd,list3,w_lane,iou,im_w,im_h,frame,out3))
-            os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s'%(eval_cmd,dd,detect_dir,dd,list4,w_lane,iou,im_w,im_h,frame,out4))
-            os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s'%(eval_cmd,dd,detect_dir,dd,list5,w_lane,iou,im_w,im_h,frame,out5))
-            os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s'%(eval_cmd,dd,detect_dir,dd,list6,w_lane,iou,im_w,im_h,frame,out6))
-            os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s'%(eval_cmd,dd,detect_dir,dd,list7,w_lane,iou,im_w,im_h,frame,out7))
-            os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s'%(eval_cmd,dd,detect_dir,dd,list8,w_lane,iou,im_w,im_h,frame,out8))
+            os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s' % (eval_cmd, dd, detect_dir, dd, list0, w_lane, iou, im_w, im_h, frame, out0))
+            os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s' % (eval_cmd, dd, detect_dir, dd, list1, w_lane, iou, im_w, im_h, frame, out1))
+            os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s' % (eval_cmd, dd, detect_dir, dd, list2, w_lane, iou, im_w, im_h, frame, out2))
+            os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s' % (eval_cmd, dd, detect_dir, dd, list3, w_lane, iou, im_w, im_h, frame, out3))
+            os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s' % (eval_cmd, dd, detect_dir, dd, list4, w_lane, iou, im_w, im_h, frame, out4))
+            os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s' % (eval_cmd, dd, detect_dir, dd, list5, w_lane, iou, im_w, im_h, frame, out5))
+            os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s' % (eval_cmd, dd, detect_dir, dd, list6, w_lane, iou, im_w, im_h, frame, out6))
+            os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s' % (eval_cmd, dd, detect_dir, dd, list7, w_lane, iou, im_w, im_h, frame, out7))
+            os.system('%s -a %s -d %s -i %s -l %s -w %s -t %s -c %s -r %s -f %s -o %s' % (eval_cmd, dd, detect_dir, dd, list8, w_lane, iou, im_w, im_h, frame, out8))
             res_all = {}
-            res_all['res_normal'] = read_helper(out0)
-            res_all['res_crowd']= read_helper(out1)
-            res_all['res_night']= read_helper(out8)
-            res_all['res_noline'] = read_helper(out4)
-            res_all['res_shadow'] = read_helper(out3)
-            res_all['res_arrow']= read_helper(out5)
-            res_all['res_hlight'] = read_helper(out2)
-            res_all['res_curve']= read_helper(out6)
-            res_all['res_cross']= read_helper(out7)
+            try:
+                res_all['res_normal'] = read_helper(out0)
+                res_all['res_crowd'] = read_helper(out1)
+                res_all['res_night'] = read_helper(out8)
+                res_all['res_noline'] = read_helper(out4)
+                res_all['res_shadow'] = read_helper(out3)
+                res_all['res_arrow'] = read_helper(out5)
+                res_all['res_hlight'] = read_helper(out2)
+                res_all['res_curve'] = read_helper(out6)
+                res_all['res_cross'] = read_helper(out7)
+            except Exception:
+                # If parsing fails, return None to indicate failure for this combo
+                return None
             return res_all
         else:
             # Fallback: if test_split doesn't exist, use the single test list (list/test.txt)
@@ -1646,21 +1685,38 @@ def call_culane_eval(data_dir, exp_name,output_path):
             # Populate a per-split dict where each expected split key maps to the same result
             res_all = {k: res for k in ['res_normal', 'res_crowd', 'res_night', 'res_noline', 'res_shadow', 'res_arrow', 'res_hlight', 'res_curve', 'res_cross']}
             return res_all
-    # call the inner helper for the IOU thresholds we want and return both results
-    try:
-        res_03 = _call_with_iou(0.3)
-    except Exception as e:
-        dist_print(f"call_culane_eval: evaluator failed for IOU=0.3: {e}")
-        res_03 = None
-    try:
-        res_05 = _call_with_iou(0.5)
-    except Exception as e:
-        dist_print(f"call_culane_eval: evaluator failed for IOU=0.5: {e}")
-        res_05 = None
+    # call the inner helper for the IOU thresholds we want. By default we run
+    # 0.3, 0.4, 0.5 and 0.6. This can be overridden via the environment var
+    # UFLD_CULANE_IOUS (comma-separated floats), e.g. UFLD_CULANE_IOUS="0.3,0.5".
+    io_us_env = _os.environ.get('UFLD_CULANE_IOUS', None)
+    if io_us_env:
+        try:
+            io_us = [float(s) for s in io_us_env.split(',') if s.strip()]
+        except Exception:
+            io_us = [0.3, 0.4, 0.5, 0.6]
+    else:
+        io_us = [0.3, 0.4, 0.5, 0.6]
+
+    # support varying the matching margin (w_lane). Default to 30,40,50,60.
+    margins_env = _os.environ.get('UFLD_CULANE_MARGINS', None)
+    if margins_env:
+        try:
+            margins = [int(s) for s in margins_env.split(',') if s.strip()]
+        except Exception:
+            margins = [30, 40, 50, 60]
+    else:
+        margins = [30, 40, 50, 60]
 
     results = {}
-    results['0.3'] = res_03
-    results['0.5'] = res_05
+    for w in margins:
+        for iou_val in io_us:
+            key = f"{iou_val:.1f}_m{int(w)}"
+            try:
+                res_i = _call_with_iou_and_margin(iou_val, w)
+            except Exception as e:
+                dist_print(f"call_culane_eval: evaluator failed for IOU={iou_val} margin={w}: {e}")
+                res_i = None
+            results[key] = res_i
     # Persist a combined summary JSON for easier inspection (best-effort)
     try:
         summary_path = os.path.join(output_path, f"{exp_name}_eval_results.json")

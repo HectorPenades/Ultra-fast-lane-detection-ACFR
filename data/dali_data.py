@@ -42,7 +42,26 @@ class LaneExternalIterator(object):
             if shard_id == 0:
                 print('loading cached data')
             cache_fp = open(cache_path, 'r')
-            self.cached_points = json.load(cache_fp)
+            raw_cached = json.load(cache_fp)
+            # Build a normalized-key map to tolerate different path formats between
+            # the cache and the image list files. We add several variants for each
+            # cached key so lookups like 'subdir/xxx.jpg' or just 'xxx.jpg' both work.
+            self.cached_points = {}
+            for k, v in raw_cached.items():
+                if not isinstance(k, str):
+                    continue
+                k_norm = k.replace('\\', '/').lstrip('/')
+                self.cached_points[k_norm] = v
+                # also store basename and last 2/3 path components as fallbacks
+                base = os.path.basename(k_norm)
+                self.cached_points.setdefault(base, v)
+                parts = k_norm.split('/')
+                if len(parts) >= 2:
+                    last2 = '/'.join(parts[-2:])
+                    self.cached_points.setdefault(last2, v)
+                if len(parts) >= 3:
+                    last3 = '/'.join(parts[-3:])
+                    self.cached_points.setdefault(last3, v)
             if shard_id == 0:
                 print('cached data loaded')
 
@@ -64,8 +83,8 @@ class LaneExternalIterator(object):
         labels = []
 
         for _ in range(self.batch_size):
-            l = self.list[self.i % self.n]
-            l_info = l.split()
+            line = self.list[self.i % self.n]
+            l_info = line.split()
             img_name = l_info[0]
             seg_name = l_info[1]
 
@@ -85,8 +104,37 @@ class LaneExternalIterator(object):
             with open(img_path, 'rb') as f:
                 seg_images.append(np.frombuffer(f.read(), dtype=np.uint8))
 
-            points = np.array(self.cached_points[img_name])
-            labels.append(points.astype(np.float32))
+            # defensive lookup: try normalized key forms and fall back if missing
+            img_key = img_name.replace('\\', '/').lstrip('/')
+            pts = None
+            if img_key in self.cached_points:
+                pts = self.cached_points[img_key]
+            else:
+                # try basename and last components
+                base = os.path.basename(img_key)
+                if base in self.cached_points:
+                    pts = self.cached_points[base]
+                else:
+                    parts = img_key.split('/')
+                    found = False
+                    if len(parts) >= 2:
+                        last2 = '/'.join(parts[-2:])
+                        if last2 in self.cached_points:
+                            pts = self.cached_points[last2]
+                            found = True
+                    if not found and len(parts) >= 3:
+                        last3 = '/'.join(parts[-3:])
+                        if last3 in self.cached_points:
+                            pts = self.cached_points[last3]
+                            found = True
+            if pts is None:
+                # Log missing cache entry and use empty points so training loop doesn't crash.
+                # It's helpful to see the exact img_name for debugging cache generation.
+                print(f"[DALI] cached_points missing for: '{img_name}' (tried '{img_key}'). Using empty points.")
+                points = np.zeros((0,), dtype=np.float32)
+            else:
+                points = np.array(pts).astype(np.float32)
+            labels.append(points)
 
             self.i = self.i + 1
             
@@ -135,7 +183,7 @@ def encoded_images_sizes(jpegs):
     w = fn.slice(shapes, 1, 1, axes=[0]) # ...and width...
     return fn.cat(w, h)               # ...and concatenate
 
-def ExternalSourceTrainPipeline(batch_size, num_threads, device_id, external_data, train_width, train_height, top_crop, normalize_image_scale = False, nscale_w = None, nscale_h = None):
+def ExternalSourceTrainPipeline(batch_size, num_threads, device_id, external_data, train_width, train_height, top_crop, normalize_image_scale = False, nscale_w = None, nscale_h = None, augment=True):
     pipe = Pipeline(batch_size, num_threads, device_id)
     with pipe:
         jpegs, seg_images, labels = fn.external_source(source=external_data, num_outputs=3)
@@ -149,15 +197,20 @@ def ExternalSourceTrainPipeline(batch_size, num_threads, device_id, external_dat
         size = encoded_images_sizes(jpegs)
         center = size / 2
 
-        mt = fn.transforms.scale(scale = fn.random.uniform(range=(0.8, 1.2), shape=[2]), center = center)
-        mt = fn.transforms.rotation(mt, angle = fn.random.uniform(range=(-6, 6)), center = center)
+        # Apply geometric augmentations (scale, rotate, translate) only when requested
+        if augment:
+            mt = fn.transforms.scale(scale = fn.random.uniform(range=(0.8, 1.2), shape=[2]), center = center)
+            mt = fn.transforms.rotation(mt, angle = fn.random.uniform(range=(-6, 6)), center = center)
 
-        off = fn.cat(fn.random.uniform(range=(-200, 200), shape = [1]), fn.random.uniform(range=(-100, 100), shape = [1]))
-        mt = fn.transforms.translation(mt, offset = off)
+            off = fn.cat(fn.random.uniform(range=(-200, 200), shape = [1]), fn.random.uniform(range=(-100, 100), shape = [1]))
+            mt = fn.transforms.translation(mt, offset = off)
 
-        images = fn.warp_affine(images, matrix = mt, fill_value=0, inverse_map=False)
-        seg_images = fn.warp_affine(seg_images, matrix = mt, fill_value=0, inverse_map=False)
-        labels = fn.coord_transform(labels.gpu(), MT = mt)
+            images = fn.warp_affine(images, matrix = mt, fill_value=0, inverse_map=False)
+            seg_images = fn.warp_affine(seg_images, matrix = mt, fill_value=0, inverse_map=False)
+            labels = fn.coord_transform(labels.gpu(), MT = mt)
+        else:
+            # No geometric augmentation: move labels to GPU and keep images as decoded
+            labels = labels.gpu()
     # Resize to final training resolution (no top-crop). Using resize to
     # `train_width` x `train_height` ensures both images and seg_images use
     # the same final spatial size (e.g. 800x288) and avoids cropping the
@@ -212,7 +265,7 @@ def ExternalSourceTestPipeline(batch_size, num_threads, device_id, external_data
 # from data.constant import culane_row_anchor, culane_col_anchor
 class TrainCollect:
     def __init__(self, batch_size, num_threads, data_root, list_path, shard_id, num_shards, row_anchor, col_anchor, train_width, train_height, num_cell_row, num_cell_col,
-    dataset_name, top_crop):
+    dataset_name, top_crop, use_augmentations=True):
         eii = LaneExternalIterator(data_root, list_path, batch_size=batch_size, shard_id=shard_id, num_shards=num_shards, dataset_name = dataset_name)
 
         if dataset_name == 'CULane':
@@ -226,9 +279,9 @@ class TrainCollect:
             self.original_image_height = 1440
 
         if dataset_name == 'CurveLanes':
-            pipe = ExternalSourceTrainPipeline(batch_size, num_threads, shard_id, eii, train_width, train_height,top_crop, normalize_image_scale = True, nscale_w = 2560, nscale_h = 1440)
+            pipe = ExternalSourceTrainPipeline(batch_size, num_threads, shard_id, eii, train_width, train_height,top_crop, normalize_image_scale = True, nscale_w = 2560, nscale_h = 1440, augment=use_augmentations)
         else:
-            pipe = ExternalSourceTrainPipeline(batch_size, num_threads, shard_id, eii, train_width, train_height,top_crop)
+            pipe = ExternalSourceTrainPipeline(batch_size, num_threads, shard_id, eii, train_width, train_height,top_crop, augment=use_augmentations)
         self.pii = DALIGenericIterator(pipe, output_map = ['images', 'seg_images', 'points'], last_batch_padded=True, last_batch_policy=LastBatchPolicy.PARTIAL)
         self.eii_n = eii.n
         self.batch_size = batch_size

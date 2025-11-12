@@ -1,14 +1,14 @@
 dataset= 'CULane'
-data_root= '/media/its/data/dinh/CULane_cropped_left_relabel'
+data_root= '/home/its/Hector/dataset/InPaint/inpaint_outputs'
 
 # Entrenamiento
-epoch= 50
+epoch= 100
 batch_size= 32
 
 # Optimizador
 optimizer= 'SGD'
-learning_rate = 0.005
-weight_decay = 0.0001
+learning_rate = 0.001
+weight_decay = 0.001
 momentum= 0.9
 
 # Scheduler

@@ -68,6 +68,12 @@ def get_args():
     parser.add_argument('--eval_only', action='store_true', help='run evaluation only and exit')
     parser.add_argument('--masked', default = None, type = str2bool)
     parser.add_argument('--num_workers', default = None, type = int, help='number of threads/workers for data loading (DALI num_threads)')
+    parser.add_argument('--use_augmentations', default = None, type = str2bool, help='enable/disable data augmentations (rotation/translation/scale) during training')
+    parser.add_argument('--freeze_backbone', action='store_true', help='freeze backbone (or prefix) parameters before training')
+    parser.add_argument('--freeze_epochs', default = 0, type = int, help='number of epochs to keep parameters frozen; 0 means keep frozen for whole run')
+    parser.add_argument('--freeze_prefix', default = 'model.', type = str, help='parameter name prefix to match when freezing (default: "model.")')
+    parser.add_argument('--freeze_bn', action='store_true', help='when freezing parameters, set BatchNorm layers to eval() to avoid updating running stats')
+    parser.add_argument('--vis_interval', default = None, type = int, help='how many training steps between saving train images to TensorBoard (default: 200)')
     
     return parser
 
@@ -81,6 +87,14 @@ def merge_config():
     'use_aux','griding_num','backbone','sim_loss_w','shp_loss_w','note','log_path',
     'finetune','resume', 'test_model','test_work_dir', 'num_lanes', 'var_loss_power', 'num_row', 'num_col', 'train_width', 'train_height',
     'num_cell_row', 'num_cell_col', 'mean_loss_w','fc_norm','soft_loss','cls_loss_col_w', 'cls_ext_col_w', 'mean_loss_col_w', 'eval_mode', 'eval_during_training', 'split_channel', 'match_method', 'selected_lane', 'cumsum', 'masked', 'num_workers']
+    # allow overriding whether to use augmentations
+    items.append('use_augmentations')
+    # allow overriding freeze options
+    items.append('freeze_backbone')
+    items.append('freeze_epochs')
+    items.append('freeze_prefix')
+    items.append('freeze_bn')
+    items.append('vis_interval')
     for item in items:
         if getattr(args, item) is not None:
             dist_print('merge ', item, ' config')
@@ -197,15 +211,15 @@ def get_train_loader(cfg):
     if cfg.dataset == 'CULane':
         num_threads = getattr(cfg, 'num_workers', 4) or 4
         train_loader = TrainCollect(cfg.batch_size, num_threads, cfg.data_root, os.path.join(cfg.data_root, 'list/train_gt.txt'), get_rank(), get_world_size(), 
-                                cfg.row_anchor, cfg.col_anchor, cfg.train_width, cfg.train_height, cfg.num_cell_row, cfg.num_cell_col, cfg.dataset, cfg.crop_ratio)
+                                cfg.row_anchor, cfg.col_anchor, cfg.train_width, cfg.train_height, cfg.num_cell_row, cfg.num_cell_col, cfg.dataset, cfg.crop_ratio, getattr(cfg, 'use_augmentations', True))
     elif cfg.dataset == 'Tusimple':
         num_threads = getattr(cfg, 'num_workers', 4) or 4
         train_loader = TrainCollect(cfg.batch_size, num_threads, cfg.data_root, os.path.join(cfg.data_root, 'train_gt.txt'), get_rank(), get_world_size(), 
-                                cfg.row_anchor, cfg.col_anchor, cfg.train_width, cfg.train_height, cfg.num_cell_row, cfg.num_cell_col, cfg.dataset, cfg.crop_ratio)
+                                cfg.row_anchor, cfg.col_anchor, cfg.train_width, cfg.train_height, cfg.num_cell_row, cfg.num_cell_col, cfg.dataset, cfg.crop_ratio, getattr(cfg, 'use_augmentations', True))
     elif cfg.dataset == 'CurveLanes':
         num_threads = getattr(cfg, 'num_workers', 4) or 4
         train_loader = TrainCollect(cfg.batch_size, num_threads, cfg.data_root, os.path.join(cfg.data_root, 'train', 'train_gt.txt'), get_rank(), get_world_size(), 
-                                cfg.row_anchor, cfg.col_anchor, cfg.train_width, cfg.train_height, cfg.num_cell_row, cfg.num_cell_col, cfg.dataset, cfg.crop_ratio)
+                                cfg.row_anchor, cfg.col_anchor, cfg.train_width, cfg.train_height, cfg.num_cell_row, cfg.num_cell_col, cfg.dataset, cfg.crop_ratio, getattr(cfg, 'use_augmentations', True))
     else:
         raise NotImplementedError
     return train_loader 
