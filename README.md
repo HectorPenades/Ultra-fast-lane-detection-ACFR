@@ -21,7 +21,7 @@ python train.py configs/culane_res18.py --log_path /path/to/your/work/dir
 ```
 or
 ```
-python -m torch.distributed.launch --nproc_per_node=8 train.py configs/culane_res18.py --log_path /path/to/your/work/dir
+**python train.py configs/culane_res34_train_flora.py --num_workers 16 --vis_interval 5 --use_augmentations False
 ```
 It should be noted that if you use different number of GPUs, the learning rate should be adjusted accordingly. The configs' learning rates correspond to 8-GPU training on CULane and CurveLanes datasets. **If you want to train on CULane or CurveLanes with single GPU, please decrease the learning rate by a factor of 1/8.** On the Tusimple, the learning rate corresponds to single GPU training.
 
