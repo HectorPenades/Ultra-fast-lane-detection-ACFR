@@ -53,7 +53,127 @@ This branch contains several practical improvements and dataset adaptations adde
     - When running evaluation the first batch's prediction tensor shapes are printed, to help confirm `loc_row`/`exist_row`/`loc_col`/`exist_col` shapes and detect mismatches early.
 
  
-## Examples
+## Comandos de entrenamiento y evaluación — CULane_cropped
+
+Todos los comandos se ejecutan desde la raíz del repositorio:
+
+```bash
+cd /media/hector/Hector/UFLDv2/Ultra-fast-lane-detection-ACFR
+```
+
+### Antes del primer entrenamiento — regenerar el caché
+
+El caché de anotaciones debe cubrir la imagen completa (y=0..590).
+Ejecutar desde la raíz del **dataset**:
+
+```bash
+cd /media/hector/Hector/ACFR/Dataset/CULane_cropped_left
+
+python scripts/4_generate_cache.py \
+    --data_root . \
+    --list list/train.txt \
+    --mask_dir laneseg_label_w16 \
+    --output culane_anno_cache.json \
+    --workers 8
+
+python scripts/4_generate_cache.py \
+    --data_root . \
+    --list list/test.txt \
+    --mask_dir laneseg_label_w16_test \
+    --output culane_anno_cache_test.json \
+    --workers 8
+```
+
+---
+
+### Entrenamiento desde cero
+
+```bash
+cd /media/hector/Hector/UFLDv2/Ultra-fast-lane-detection-ACFR
+
+python train.py configs/culane_cropped_res34.py \
+    --num_workers 8
+```
+
+**Flags opcionales:**
+
+| Flag | Descripción | Ejemplo |
+|---|---|---|
+| `--num_workers N` | Hilos DALI para carga de datos | `--num_workers 8` |
+| `--batch_size N` | Sobreescribe el batch_size del config | `--batch_size 16` |
+| `--epoch N` | Número de épocas | `--epoch 50` |
+| `--learning_rate F` | Tasa de aprendizaje | `--learning_rate 0.005` |
+| `--log_path /ruta/` | Directorio de logs y checkpoints | `--log_path /media/hector/Hector/UFLDv2/logs` |
+| `--use_augmentations False` | Desactiva augmentations (para debug rápido) | |
+| `--vis_interval N` | Cada cuántos pasos guarda imagen a TensorBoard | `--vis_interval 500` |
+
+---
+
+### Continuar entrenamiento (resume)
+
+```bash
+python train.py configs/culane_cropped_res34.py \
+    --resume /media/hector/Hector/UFLDv2/logs/YYYYMMDD_HHMMSS_lr_5e-03_b_32_culane_cropped/checkpoints/model_best.pth \
+    --num_workers 8
+```
+
+---
+
+### Fine-tuning desde un checkpoint existente
+
+```bash
+python train.py configs/culane_cropped_res34.py \
+    --finetune /ruta/al/checkpoint.pth \
+    --learning_rate 0.001 \
+    --epoch 20 \
+    --num_workers 8
+```
+
+---
+
+### Solo evaluación (sin entrenar)
+
+```bash
+python train.py configs/culane_cropped_res34.py \
+    --eval_only \
+    --test_model /media/hector/Hector/UFLDv2/logs/YYYYMMDD_.../checkpoints/model_best.pth \
+    --num_workers 8
+```
+
+**Salidas de evaluación:**
+
+| Fichero | Contenido |
+|---|---|
+| `<test_work_dir>/<exp>_eval_results.json` | Resumen JSON con claves `"0.3_m30"`, `"0.4_m30"`, `"0.5_m30"`, `"0.6_m30"` |
+| `<test_work_dir>/txt/out0_normal_m30_iou3.txt` | Resultado por split a IoU=0.3 |
+| `<test_work_dir>/txt/out0_normal_m30_iou5.txt` | Resultado por split a IoU=0.5 |
+
+---
+
+### Monitorizar entrenamiento con TensorBoard
+
+```bash
+tensorboard --logdir /media/hector/Hector/UFLDv2/logs
+```
+
+---
+
+### Debug rápido (1 epoch, sin augmentations)
+
+```bash
+python train.py configs/culane_cropped_res34.py \
+    --epoch 1 \
+    --use_augmentations False \
+    --vis_interval 10 \
+    --num_workers 4
+```
+
+Las imágenes de entrenamiento con labels superpuestos se guardan en:
+`<log_dir>/vis/input_XXXXXX.png`
+
+---
+
+## Examples (original)
 Here are some practical example commands that reflect the changes in this fork (resize/no-crop, configurable num workers, eval-only, etc.). Adjust paths and flags as needed.
 
 - Single-GPU training (with configurable data loader workers):
@@ -61,7 +181,4 @@ Here are some practical example commands that reflect the changes in this fork (
 ```bash
 python train.py configs/culane_res34_train.py --num_workers 14
 ```
-
-
-
 
