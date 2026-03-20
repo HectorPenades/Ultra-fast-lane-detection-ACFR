@@ -751,7 +751,7 @@ def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_rati
             except Exception:
                 eprint('Could not read pred shapes for debug')
         
-        if dataset == "CULane":
+        if dataset in ('CULane', 'CULane_cropped'):
             generate_lines_local(dataset, pred['loc_row'],pred['exist_row'], names, output_path, 'normal', row_anchor=row_anchor)
             generate_lines_col_local(dataset, pred['loc_col'],pred['exist_col'], names, output_path, 'normal', col_anchor=col_anchor)
         elif dataset == 'CurveLanes':
