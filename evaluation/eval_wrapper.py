@@ -1374,7 +1374,7 @@ def eval_lane(net, cfg, ep = None, logger = None):
             return F
         else:
             return None
-    elif cfg.dataset == 'CULane':
+    elif cfg.dataset in ('CULane', 'CULane_cropped'):
         if not cfg.tta:
             run_test(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor = cfg.row_anchor, col_anchor = cfg.col_anchor, logger=logger)
         else:

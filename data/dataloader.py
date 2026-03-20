@@ -122,7 +122,7 @@ def get_train_loader(batch_size, data_root, griding_num, dataset, use_aux, distr
 
 def get_test_loader(batch_size, data_root,dataset, distributed, crop_ratio, train_width, train_height):
 
-    if dataset == 'CULane':
+    if dataset in ('CULane', 'CULane_cropped'):
         img_transforms = transforms.Compose([
             transforms.Resize((int(train_height / crop_ratio), train_width)),
             transforms.ToTensor(),
