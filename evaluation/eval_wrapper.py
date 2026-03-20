@@ -166,6 +166,8 @@ def generate_lines_local(dataset, out, out_ext, names, output_path, mode='normal
     if mode == 'normal' or mode == '2row2col':
         if dataset == 'CULane':
             lane_list = [1, 2]
+        elif dataset == 'CULane_cropped':
+            lane_list = [0, 1]   # slot 0=izq, slot 1=der (ambos carriles)
         elif dataset == 'CurveLanes':
             # lane_list = [2, 3, 4, 5, 6, 7]
             lane_list = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
@@ -182,7 +184,7 @@ def generate_lines_local(dataset, out, out_ext, names, output_path, mode='normal
         line_save_path = os.path.join(output_path, name[:-3] + 'lines.txt')
         save_dir, _ = os.path.split(line_save_path)
         if not os.path.exists(save_dir):
-            os.makedirs(save_dir) 
+            os.makedirs(save_dir)
         with open(line_save_path, 'w') as fp:
             # for i in range(num_lane):
             for i in lane_list:
@@ -190,10 +192,10 @@ def generate_lines_local(dataset, out, out_ext, names, output_path, mode='normal
                     for k in range(valid.shape[1]):
                         if valid[j,k,i]:
                             all_ind = torch.tensor(list(range(max(0,max_indices[j,k,i] - local_width), min(out.shape[1]-1, max_indices[j,k,i] + local_width) + 1)))
-                            
-                            out_tmp = (out[j,all_ind,k,i].softmax(0) * all_ind.float()).sum() + 0.5 
 
-                            if dataset == 'CULane':
+                            out_tmp = (out[j,all_ind,k,i].softmax(0) * all_ind.float()).sum() + 0.5
+
+                            if dataset in ('CULane', 'CULane_cropped'):
                                 out_tmp = out_tmp / (out.shape[1]-1) * 1640
                                 fp.write('%.3f %.3f '% ( out_tmp , row_anchor[k] * 590))
                             elif dataset == 'CurveLanes':
@@ -217,6 +219,8 @@ def generate_lines_col_local(dataset, out_col,out_col_ext, names, output_path, m
     if mode == 'normal' or mode == '2row2col':
         if dataset == 'CULane':
             lane_list = [0, 3]
+        elif dataset == 'CULane_cropped':
+            lane_list = [0, 1]   # slot 0=izq, slot 1=der (ambos carriles)
         elif dataset == 'CurveLanes':
             # lane_list = [0, 1, 8, 9]
             lane_list = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
@@ -240,8 +244,8 @@ def generate_lines_col_local(dataset, out_col,out_col_ext, names, output_path, m
                     for k in range(valid.shape[1]):
                         if valid[j,k,i]:
                             all_ind = torch.tensor(list(range(max(0,max_indices[j,k,i] - local_width), min(out_col.shape[1]-1, max_indices[j,k,i] + local_width) + 1)))
-                            out_tmp = (out_col[j,all_ind,k,i].softmax(0) * all_ind.float()).sum() + 0.5 
-                            if dataset == 'CULane':
+                            out_tmp = (out_col[j,all_ind,k,i].softmax(0) * all_ind.float()).sum() + 0.5
+                            if dataset in ('CULane', 'CULane_cropped'):
                                 out_tmp = out_tmp / (out_col.shape[1]-1) * 590
                                 fp.write('%.3f %.3f '% ( col_anchor[k] * 1640, out_tmp ))
                             elif dataset == 'CurveLanes':

@@ -113,7 +113,12 @@ def merge_config():
     elif cfg.dataset == 'CurveLanes':
         cfg.row_anchor = np.linspace(0.4, 1, cfg.num_row)
         cfg.col_anchor = np.linspace(0, 1, cfg.num_col)
-    
+    elif cfg.dataset == 'CULane_cropped':
+        # Full image (no sky, camera sees road throughout). Same formula as CULane
+        # because top_crop is not applied in the ACFR version of the DALI pipeline.
+        cfg.row_anchor = np.linspace(0.0, 1.0, cfg.num_row)
+        cfg.col_anchor = np.linspace(0, 1, cfg.num_col)
+
     return args, cfg
 
 
@@ -205,7 +210,9 @@ def real_init_weights(m):
             
 import importlib
 def get_model(cfg):
-    return importlib.import_module('model.model_'+cfg.dataset.lower()).get_model(cfg)
+    # CULane_cropped reuses the same model architecture as CULane
+    model_module = 'culane' if cfg.dataset.upper().startswith('CULANE') else cfg.dataset.lower()
+    return importlib.import_module('model.model_' + model_module).get_model(cfg)
 
 def get_train_loader(cfg):
     if cfg.dataset == 'CULane':
@@ -218,16 +225,24 @@ def get_train_loader(cfg):
                                 cfg.row_anchor, cfg.col_anchor, cfg.train_width, cfg.train_height, cfg.num_cell_row, cfg.num_cell_col, cfg.dataset, cfg.crop_ratio, getattr(cfg, 'use_augmentations', True))
     elif cfg.dataset == 'CurveLanes':
         num_threads = getattr(cfg, 'num_workers', 4) or 4
-        train_loader = TrainCollect(cfg.batch_size, num_threads, cfg.data_root, os.path.join(cfg.data_root, 'train', 'train_gt.txt'), get_rank(), get_world_size(), 
+        train_loader = TrainCollect(cfg.batch_size, num_threads, cfg.data_root, os.path.join(cfg.data_root, 'train', 'train_gt.txt'), get_rank(), get_world_size(),
                                 cfg.row_anchor, cfg.col_anchor, cfg.train_width, cfg.train_height, cfg.num_cell_row, cfg.num_cell_col, cfg.dataset, cfg.crop_ratio, getattr(cfg, 'use_augmentations', True))
+    elif cfg.dataset == 'CULane_cropped':
+        num_threads = getattr(cfg, 'num_workers', 4) or 4
+        train_loader = TrainCollect(cfg.batch_size, num_threads, cfg.data_root,
+                                os.path.join(cfg.data_root, 'list/train_gt.txt'),
+                                get_rank(), get_world_size(),
+                                cfg.row_anchor, cfg.col_anchor, cfg.train_width, cfg.train_height,
+                                cfg.num_cell_row, cfg.num_cell_col, cfg.dataset, cfg.crop_ratio,
+                                getattr(cfg, 'use_augmentations', True))
     else:
         raise NotImplementedError
-    return train_loader 
+    return train_loader
 
 def inference(net, data_label, dataset):
     if dataset == 'CurveLanes':
         return inference_curvelanes(net, data_label)
-    elif dataset in ['Tusimple', 'CULane']:
+    elif dataset in ['Tusimple', 'CULane', 'CULane_cropped']:
         return inference_culane_tusimple(net, data_label)
     else:
         raise NotImplementedError
