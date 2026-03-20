@@ -599,13 +599,13 @@ def rectify_lines(names, output_path):
             fp.close()
 
 
-def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_ratio, train_width, train_height , batch_size=8, row_anchor = None, col_anchor = None, logger=None):
+def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_ratio, train_width, train_height , batch_size=8, row_anchor = None, col_anchor = None, logger=None, test_list=None):
     # torch.backends.cudnn.benchmark = True
     output_path = os.path.join(work_dir, exp_name)
     if not os.path.exists(output_path) and is_main_process():
         os.mkdir(output_path)
     synchronize()
-    loader = get_test_loader(batch_size, data_root, dataset, distributed, crop_ratio, train_width, train_height)
+    loader = get_test_loader(batch_size, data_root, dataset, distributed, crop_ratio, train_width, train_height, test_list=test_list)
     # import pdb;pdb.set_trace()
     for i, data in enumerate(dist_tqdm(loader)):
         imgs, names = data
@@ -1375,14 +1375,15 @@ def eval_lane(net, cfg, ep = None, logger = None):
         else:
             return None
     elif cfg.dataset in ('CULane', 'CULane_cropped'):
+        _test_list = getattr(cfg, 'test_list', None)
         if not getattr(cfg, 'tta', False):
-            run_test(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor = cfg.row_anchor, col_anchor = cfg.col_anchor, logger=logger)
+            run_test(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor = cfg.row_anchor, col_anchor = cfg.col_anchor, logger=logger, test_list=_test_list)
         else:
             run_test_tta(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor = cfg.row_anchor, col_anchor = cfg.col_anchor)
         synchronize()    # wait for all results
         if is_main_process():
             # Run the standard CULane evaluator on the generated detection folder.
-            res_both = call_culane_eval(cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir)
+            res_both = call_culane_eval(cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, test_list=_test_list)
             # res_both is a dict mapping stringified IOUs (e.g. '0.3','0.4') to per-split results.
             # Iterate over whatever IOUs the evaluator returned so we support configurable sets.
             if not isinstance(res_both, dict):
@@ -1602,7 +1603,7 @@ def _append_eval_history(cfg, ep, results_dict, dataset_name=None, logger=None):
     except Exception:
         pass
 
-def call_culane_eval(data_dir, exp_name,output_path):
+def call_culane_eval(data_dir, exp_name, output_path, test_list=None):
     # helper that runs the CULane evaluator with a specified iou and returns results
     def _call_with_iou_and_margin(iou_val, w_lane):
         if data_dir[-1] != '/':
@@ -1674,7 +1675,7 @@ def call_culane_eval(data_dir, exp_name,output_path):
             # mapping where every split key maps to the single-result read from the
             # evaluator output. This avoids executing the evaluator multiple times
             # (the previous implementation could run the evaluator repeatedly).
-            list_file = os.path.join(dd, 'list', 'test.txt')
+            list_file = os.path.join(dd, test_list) if test_list else os.path.join(dd, 'list', 'test.txt')
             if not os.path.exists(os.path.join(output_path, 'txt')):
                 os.mkdir(os.path.join(output_path, 'txt'))
             out_single = os.path.join(output_path, 'txt', f'out_single_{int(iou_val*10)}.txt')

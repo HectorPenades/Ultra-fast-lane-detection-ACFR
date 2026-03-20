@@ -39,3 +39,7 @@ finetune = None
 resume = None
 test_model = None
 test_work_dir = '/media/hector/Hector/UFLDv2/work'
+# Fichero de lista de test (relativo a data_root). None = usa list/test.txt completo.
+# Para evaluación rápida con subconjunto aleatorio del 20%:
+#   test_list = 'list/test_mini.txt'
+test_list = None

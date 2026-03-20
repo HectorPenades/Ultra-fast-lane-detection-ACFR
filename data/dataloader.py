@@ -120,7 +120,7 @@ def get_train_loader(batch_size, data_root, griding_num, dataset, use_aux, distr
 
     return train_loader, cls_num_per_lane
 
-def get_test_loader(batch_size, data_root,dataset, distributed, crop_ratio, train_width, train_height):
+def get_test_loader(batch_size, data_root, dataset, distributed, crop_ratio, train_width, train_height, test_list=None):
 
     if dataset in ('CULane', 'CULane_cropped'):
         img_transforms = transforms.Compose([
@@ -128,7 +128,8 @@ def get_test_loader(batch_size, data_root,dataset, distributed, crop_ratio, trai
             transforms.ToTensor(),
             transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
         ])
-        test_dataset = LaneTestDataset(data_root,os.path.join(data_root, 'list/test.txt'),img_transform = img_transforms, crop_size=train_height)
+        list_path = os.path.join(data_root, test_list) if test_list else os.path.join(data_root, 'list/test.txt')
+        test_dataset = LaneTestDataset(data_root, list_path, img_transform=img_transforms, crop_size=train_height)
     elif dataset == 'Tusimple':
         img_transforms = transforms.Compose([
             transforms.Resize((int(train_height / crop_ratio), train_width)),
