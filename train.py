@@ -516,6 +516,37 @@ if __name__ == "__main__":
         dist_print('Evaluation result:', res)
         logger.close()
         sys.exit(0)
+    # ── Sanity check: verify first batch has valid labels ────────────────────
+    try:
+        first_batch = next(iter(train_loader))
+        if isinstance(first_batch, dict):
+            lr_float = first_batch.get('labels_row_float')
+            lc_float = first_batch.get('labels_col_float')
+            lr      = first_batch.get('labels_row')
+            lc      = first_batch.get('labels_col')
+        else:
+            lr_float = lc_float = lr = lc = None
+
+        if lr_float is not None:
+            import numpy as _np
+            lrf = lr_float.cpu().numpy() if hasattr(lr_float, 'cpu') else _np.array(lr_float)
+            valid_row = (lrf >= 0) & (lrf <= 1)
+            counts_per_lane = valid_row.sum(axis=(0, 1)) if lrf.ndim == 3 else valid_row.sum(axis=0)
+            dist_print(f'[Sanity] labels_row_float valid per lane (first batch): {counts_per_lane.tolist()}')
+            if valid_row.sum() == 0:
+                dist_print('[Sanity] WARNING: ALL labels_row_float are sentinel. Check cache and my_interp.')
+            else:
+                dist_print('[Sanity] labels_row_float OK.')
+        if lr is not None:
+            import numpy as _np
+            lr_np = lr.cpu().numpy() if hasattr(lr, 'cpu') else _np.array(lr)
+            valid_cls = (lr_np >= 0)
+            dist_print(f'[Sanity] labels_row valid bins: {int(valid_cls.sum())} / {lr_np.size}')
+        train_loader.reset()
+    except Exception as _e:
+        dist_print(f'[Sanity] could not run first-batch check: {_e}')
+    # ─────────────────────────────────────────────────────────────────────────
+
     # cp_projects(cfg.auto_backup, work_dir)
     max_res = 0
     res = None
