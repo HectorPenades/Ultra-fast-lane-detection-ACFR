@@ -38,6 +38,11 @@ def _run_pytorch(points: torch.Tensor,
         (B, L, N, 2) — pares interpolados; dst=-99999 donde no hay datos.
     """
     SENTINEL = -99999.0
+    # After DALI affine augmentation the sentinel coords (-99999) get transformed
+    # (e.g. rotation by 6° turns x=-99999 into x≈-99417, which passes the old
+    # SENTINEL+1 check). Use a looser threshold so augmented sentinels are still
+    # detected.  Valid pixel x/y are always ≥ 0, so -9999 gives plenty of margin.
+    VALID_THRESHOLD = -9999.0
     device = points.device
     dtype = points.dtype
 
@@ -52,15 +57,22 @@ def _run_pytorch(points: torch.Tensor,
     src = points[:, :, :, src_axis]   # (B, L, P)
     dst = points[:, :, :, dst_axis]   # (B, L, P)
 
-    # Máscara de puntos válidos (dst no es centinela)
-    valid = dst > (SENTINEL + 1.0)    # (B, L, P) bool
+    # Máscara de puntos válidos (dst no es centinela, incluso tras augmentación)
+    valid = dst > VALID_THRESHOLD     # (B, L, P) bool
+
+    # After augmentation the src (Y/X) axis is no longer sorted — sentinel
+    # coordinates shift to large negatives (~-10000 for Y after rotation).
+    # Sort ascending so searchsorted is well-defined. Sentinels sort to the
+    # front; valid points (≥0) follow. This is a no-op when not augmented.
+    sort_idx = torch.argsort(src, dim=2)                           # (B, L, P)
+    src   = torch.gather(src,          2, sort_idx)
+    dst   = torch.gather(dst,          2, sort_idx)
+    valid = torch.gather(valid.long(), 2, sort_idx).bool()
 
     # Queries: (B, L, N)
     q = interp_loc.to(dtype=dtype, device=device).view(1, 1, N).expand(B, L, N)
 
     # Encontrar índices del intervalo [l, r) usando searchsorted con side='right'.
-    # Con side='right', q=src[0] → r_idx=1, l_idx=0 (borde izquierdo incluido).
-    # src está ordenado de forma ascendente (ROW_ANCHORS = 0,10,...,590).
     r_idx = torch.searchsorted(src.contiguous(), q.contiguous(), right=True)  # (B, L, N)
     l_idx = r_idx - 1
 
@@ -82,8 +94,8 @@ def _run_pytorch(points: torch.Tensor,
     interp_val = dst_l * (1.0 - t) + dst_r * t
 
     # Válido si:
-    #   - l_idx >= 0  (q >= src[0], borde izquierdo)
-    #   - q <= src[:,:,-1]  (borde derecho, incluye el punto exacto final)
+    #   - l_idx >= 0  (q >= src[0] del rango válido)
+    #   - q <= src[:,:,-1]  (max src tras sort = máximo válido)
     #   - ambos vecinos son válidos (dst no es centinela)
     src_max = src[:, :, -1:].expand_as(q)
     in_range = (l_idx >= 0) & (q <= src_max)
