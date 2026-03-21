@@ -131,6 +131,18 @@ Added a first-batch check at the start of each training run (`train.py`) that re
 
 ---
 
-## 8. `--eval_only` flag
+## 8. `infer.py` — standalone inference script
+
+New script `infer.py` at the repository root. Runs a trained checkpoint on a single image or a folder of images without requiring a test list, annotation cache, or the DALI library.
+
+**Inputs:** `--model` (checkpoint path), `--input` (image or folder), `--output` (output directory), `--config` (defaults to `configs/culane_cropped_res34.py`), `--save_txt` (also write `.lines.txt`).
+
+**Outputs:** annotated images (`*_lanes.jpg`) and optionally `.lines.txt` files with lane coordinates in original image pixel space. The input directory structure is mirrored in the output directory.
+
+The post-processing in `infer.py` (`pred_to_coords`) is equivalent to `generate_lines_local` + `generate_lines_col_local` from `eval_wrapper.py` but written as a self-contained function. Lane slot indices are `[0, 1]` for both row and col branches (correct for 2-lane CULane\_cropped model). The original `demo.py` used `[1, 2]` for row and `[0, 3]` for col which are the CULane 4-lane indices.
+
+---
+
+## 9. `--eval_only` flag
 
 Added `--eval_only` CLI argument to `train.py`. When set together with `--test_model /path/to/checkpoint.pth`, the script loads the checkpoint, runs evaluation, prints results, and exits without entering the training loop.

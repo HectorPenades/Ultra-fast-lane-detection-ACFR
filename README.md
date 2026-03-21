@@ -13,8 +13,9 @@ The original repository is [cfzd/Ultra-Fast-Lane-Detection-V2](https://github.co
 3. [Data preparation](#data-preparation)
 4. [Training](#training)
 5. [Evaluation](#evaluation)
-6. [Configuration reference](#configuration-reference)
-7. [TensorBoard](#tensorboard)
+6. [Inference](#inference)
+7. [Configuration reference](#configuration-reference)
+8. [TensorBoard](#tensorboard)
 
 ---
 
@@ -306,6 +307,47 @@ The evaluator runs the CULane binary for IoU ∈ {0.3, 0.4, 0.5, 0.6} × margin 
 |---|---|
 | `<test_work_dir>/culane_eval_tmp_eval_results.json` | Full results JSON, keys like `"0.5_m30"` |
 | `<test_work_dir>/txt/out_single_*.txt` | Raw evaluator output per IoU/margin |
+
+---
+
+## Inference
+
+`infer.py` runs a trained checkpoint on one image or a folder of images and saves annotated results. It does not require a test list or annotation cache.
+
+### Usage
+
+```bash
+# Single image
+python infer.py --model /path/to/model_best.pth --input image.jpg
+
+# Folder of images (walks subdirectories)
+python infer.py --model /path/to/model_best.pth --input /path/to/images/
+
+# Custom output directory + save .lines.txt alongside each result
+python infer.py --model /path/to/model_best.pth \
+                --input /path/to/images/ \
+                --output /path/to/results/ \
+                --save_txt
+```
+
+### Arguments
+
+| Argument | Default | Description |
+|---|---|---|
+| `--model` / `-m` | required | Path to checkpoint `.pth` |
+| `--input` / `-i` | required | Image file or folder |
+| `--output` / `-o` | `inference_output/` | Output directory |
+| `--config` / `-c` | `configs/culane_cropped_res34.py` | Config file |
+| `--save_txt` | off | Also save `.lines.txt` with raw coordinates |
+
+### Outputs
+
+For each input image `path/to/img.jpg` the script writes:
+
+- `<output>/path/to/img_lanes.jpg` — original image with lanes drawn (green = left, red = right)
+- `<output>/path/to/img_lanes.lines.txt` — one lane per line, `x1 y1 x2 y2 ...` in original pixel coordinates (only with `--save_txt`)
+
+The input directory structure is mirrored in the output directory.
 
 ---
 
