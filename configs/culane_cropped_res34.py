@@ -57,5 +57,5 @@ anno_cache = None
 # Ejemplos:
 #   min_row_frac = 0.6   → row requiere >43/72 anchors (antes >36)
 #   min_col_frac = 0.35  → col requiere >28/81 anchors (antes >20, mantiene ratio similar)
-min_row_frac = None
-min_col_frac = None
+min_row_frac = 0.7
+min_col_frac = 0.4

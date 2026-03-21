@@ -1,8 +1,15 @@
-opencv-python
-tqdm
-tensorboard
-addict
-sklearn
-pathspec
-imagesize
-ujson
+# Non-CUDA pip dependencies — install AFTER PyTorch and DALI (see README).
+# PyTorch and DALI are NOT listed here because they depend on the CUDA version
+# of the target machine. Follow the README instructions for those.
+
+numpy==2.0.2
+opencv-python==4.10.0.84
+Pillow==9.4.0
+scipy==1.13.1
+tqdm==4.66.5
+tensorboard==2.20.0
+addict==2.4.0
+scikit-learn          # used by Tusimple evaluator (optional for CULane_cropped)
+pathspec==1.0.4
+imagesize             # used by CurveLanes scripts (optional for CULane_cropped)
+ujson==5.11.0

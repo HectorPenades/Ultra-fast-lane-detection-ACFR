@@ -1,0 +1,40 @@
+# Conda environment for UFLDv2 — CULane_cropped_left (ACFR fork)
+#
+# Usage:
+#   conda env create -f environment.yml
+#   conda activate lane
+#
+# After activation, install PyTorch and DALI manually (CUDA-version-dependent).
+# See README.md §Installation for the exact pip commands.
+#
+# Tested with: Python 3.9, PyTorch 2.5.0, DALI 1.53.0, CUDA 11.8 / 12.x
+
+name: lane
+
+channels:
+  - defaults
+
+dependencies:
+  - python=3.9
+  - pip
+  - pip:
+    # ── Core ─────────────────────────────────────────────────────────────────
+    - numpy==2.0.2
+    - opencv-python==4.10.0.84
+    - Pillow==9.4.0
+    - scipy==1.13.1
+
+    # ── Training utilities ───────────────────────────────────────────────────
+    - tqdm==4.66.5
+    - tensorboard==2.20.0
+    - addict==2.4.0       # config file loading
+    - pathspec==1.0.4     # auto_backup (.gitignore filtering)
+    - ujson==5.11.0       # fast JSON for annotation cache
+
+    # ── Optional (other datasets) ────────────────────────────────────────────
+    - scikit-learn         # Tusimple evaluator
+    - imagesize            # CurveLanes scripts
+
+    # ── NOT included here (install manually, see README) ─────────────────────
+    # PyTorch:  pip install torch==2.5.0 torchvision==0.20.0 --index-url https://download.pytorch.org/whl/cu118
+    # DALI:     pip install --extra-index-url https://developer.download.nvidia.com/compute/redist nvidia-dali-cuda120

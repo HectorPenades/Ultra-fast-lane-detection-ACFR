@@ -37,6 +37,8 @@ The dataset README at the dataset root covers directory structure, list file for
 
 ## Installation
 
+Tested with: **Python 3.9 · PyTorch 2.5.0 · DALI 1.53.0 · CUDA 11.8 / 12.x**
+
 ### 1. Clone
 
 ```bash
@@ -46,6 +48,15 @@ cd Ultra-fast-lane-detection-ACFR
 
 ### 2. Conda environment
 
+Option A — create from the provided file (recommended):
+
+```bash
+conda env create -f environment.yml
+conda activate lane
+```
+
+Option B — create manually:
+
 ```bash
 conda create -n lane python=3.9 -y
 conda activate lane
@@ -53,11 +64,23 @@ conda activate lane
 
 ### 3. PyTorch
 
-Install PyTorch matching your CUDA version from [pytorch.org](https://pytorch.org/get-started/locally/). Example for CUDA 11.8:
+Find your CUDA version with `nvidia-smi` (top-right corner) and install the matching build:
 
 ```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# CUDA 11.8
+pip install torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 \
+    --index-url https://download.pytorch.org/whl/cu118
+
+# CUDA 12.1
+pip install torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 \
+    --index-url https://download.pytorch.org/whl/cu121
+
+# CUDA 12.4
+pip install torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 \
+    --index-url https://download.pytorch.org/whl/cu124
 ```
+
+Verify: `python -c "import torch; print(torch.cuda.is_available())"` should print `True`.
 
 ### 4. Python dependencies
 
@@ -67,12 +90,19 @@ pip install -r requirements.txt
 
 ### 5. NVIDIA DALI
 
+DALI must match your CUDA version. Choose the right suffix:
+
 ```bash
+# CUDA 11.x
 pip install --extra-index-url https://developer.download.nvidia.com/compute/redist \
-    --upgrade nvidia-dali-cuda110
+    nvidia-dali-cuda110==1.53.0
+
+# CUDA 12.x
+pip install --extra-index-url https://developer.download.nvidia.com/compute/redist \
+    nvidia-dali-cuda120==1.53.0
 ```
 
-Adjust the `cuda110` suffix to match your CUDA version (`cuda120`, etc.).
+Verify: `python -c "import nvidia.dali; print(nvidia.dali.__version__)"` should print `1.53.0`.
 
 ### 6. my\_interp
 
