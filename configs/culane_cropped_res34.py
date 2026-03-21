@@ -43,3 +43,19 @@ test_work_dir = '/media/hector/Hector/UFLDv2/work'
 # Para evaluación rápida con subconjunto aleatorio del 20%:
 #   test_list = 'list/test_mini.txt'
 test_list = None
+
+# Datos de entrenamiento (relativo a data_root). None = usa list/train_gt.txt (133k imgs train).
+# Para entrenar con el 80% del conjunto de test (8616 imgs, sin solapamiento con test_mini.txt):
+#   train_list = 'list/train_gt_from_test.txt'
+#   anno_cache = 'culane_anno_cache_test.json'
+train_list = None
+anno_cache = None
+
+# Fracción mínima de anchors válidos para aceptar una detección (0.0-1.0).
+# None = comportamiento original (row: >50% de 72, col: >25% de 81).
+# Los GT tienen mediana ~93% de anchors. Subir min_row_frac reduce FP de detecciones cortas.
+# Ejemplos:
+#   min_row_frac = 0.6   → row requiere >43/72 anchors (antes >36)
+#   min_col_frac = 0.35  → col requiere >28/81 anchors (antes >20, mantiene ratio similar)
+min_row_frac = None
+min_col_frac = None

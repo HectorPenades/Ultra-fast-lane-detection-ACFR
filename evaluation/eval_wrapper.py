@@ -154,7 +154,7 @@ def generate_lines_col(out_col,out_col_ext, shape, names, output_path, griding_n
                             fp.write('%.3f %.3f '% ( col_x, loc[j,k,i] ))
                     fp.write('\n')
 
-def generate_lines_local(dataset, out, out_ext, names, output_path, mode='normal', row_anchor = None):
+def generate_lines_local(dataset, out, out_ext, names, output_path, mode='normal', row_anchor=None, min_row_frac=None):
     batch_size, num_grid_row, num_cls, num_lane = out.shape
     max_indices = out.argmax(1).cpu()
     # n , num_cls, num_lanes
@@ -186,9 +186,10 @@ def generate_lines_local(dataset, out, out_ext, names, output_path, mode='normal
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
         with open(line_save_path, 'w') as fp:
+            _row_thresh = int(num_cls * min_row_frac) if min_row_frac is not None else num_cls // 2
             # for i in range(num_lane):
             for i in lane_list:
-                if valid[j,:,i].sum() > num_cls / 2:
+                if valid[j,:,i].sum() > _row_thresh:
                     for k in range(valid.shape[1]):
                         if valid[j,k,i]:
                             all_ind = torch.tensor(list(range(max(0,max_indices[j,k,i] - local_width), min(out.shape[1]-1, max_indices[j,k,i] + local_width) + 1)))
@@ -207,7 +208,7 @@ def generate_lines_local(dataset, out, out_ext, names, output_path, mode='normal
                 elif mode == 'all':
                     fp.write('\n')
 
-def generate_lines_col_local(dataset, out_col,out_col_ext, names, output_path, mode='normal', col_anchor = None):
+def generate_lines_col_local(dataset, out_col,out_col_ext, names, output_path, mode='normal', col_anchor=None, min_col_frac=None):
     batch_size, num_grid_col, num_cls, num_lane = out_col.shape
     max_indices = out_col.argmax(1).cpu()
     # n, num_cls, num_lanes
@@ -238,9 +239,10 @@ def generate_lines_col_local(dataset, out_col,out_col_ext, names, output_path, m
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
         with open(line_save_path, 'a') as fp:
+            _col_thresh = int(num_cls * min_col_frac) if min_col_frac is not None else num_cls // 4
             # for i in range(num_lane):
             for i in lane_list:
-                if valid[j,:,i].sum() > num_cls / 4:
+                if valid[j,:,i].sum() > _col_thresh:
                     for k in range(valid.shape[1]):
                         if valid[j,k,i]:
                             all_ind = torch.tensor(list(range(max(0,max_indices[j,k,i] - local_width), min(out_col.shape[1]-1, max_indices[j,k,i] + local_width) + 1)))
@@ -599,7 +601,7 @@ def rectify_lines(names, output_path):
             fp.close()
 
 
-def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_ratio, train_width, train_height , batch_size=8, row_anchor = None, col_anchor = None, logger=None, test_list=None):
+def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_ratio, train_width, train_height , batch_size=8, row_anchor = None, col_anchor = None, logger=None, test_list=None, min_row_frac=None, min_col_frac=None):
     # torch.backends.cudnn.benchmark = True
     output_path = os.path.join(work_dir, exp_name)
     if not os.path.exists(output_path) and is_main_process():
@@ -752,8 +754,8 @@ def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_rati
                 eprint('Could not read pred shapes for debug')
         
         if dataset in ('CULane', 'CULane_cropped'):
-            generate_lines_local(dataset, pred['loc_row'],pred['exist_row'], names, output_path, 'normal', row_anchor=row_anchor)
-            generate_lines_col_local(dataset, pred['loc_col'],pred['exist_col'], names, output_path, 'normal', col_anchor=col_anchor)
+            generate_lines_local(dataset, pred['loc_row'],pred['exist_row'], names, output_path, 'normal', row_anchor=row_anchor, min_row_frac=min_row_frac)
+            generate_lines_col_local(dataset, pred['loc_col'],pred['exist_col'], names, output_path, 'normal', col_anchor=col_anchor, min_col_frac=min_col_frac)
         elif dataset == 'CurveLanes':
             generate_lines_local_curve_combine(dataset, pred['loc_row'],pred['exist_row'], names, output_path, row_anchor=row_anchor)
             generate_lines_col_local_curve_combine(dataset, pred['loc_col'],pred['exist_col'], names, output_path, col_anchor=col_anchor)
@@ -1376,8 +1378,10 @@ def eval_lane(net, cfg, ep = None, logger = None):
             return None
     elif cfg.dataset in ('CULane', 'CULane_cropped'):
         _test_list = getattr(cfg, 'test_list', None)
+        _min_row_frac = getattr(cfg, 'min_row_frac', None)
+        _min_col_frac = getattr(cfg, 'min_col_frac', None)
         if not getattr(cfg, 'tta', False):
-            run_test(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor = cfg.row_anchor, col_anchor = cfg.col_anchor, logger=logger, test_list=_test_list)
+            run_test(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor = cfg.row_anchor, col_anchor = cfg.col_anchor, logger=logger, test_list=_test_list, min_row_frac=_min_row_frac, min_col_frac=_min_col_frac)
         else:
             run_test_tta(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor = cfg.row_anchor, col_anchor = cfg.col_anchor)
         synchronize()    # wait for all results

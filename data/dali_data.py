@@ -10,7 +10,7 @@ from nvidia.dali.plugin.pytorch import DALIGenericIterator
 from nvidia.dali.plugin.pytorch import LastBatchPolicy
 import my_interp
 class LaneExternalIterator(object):
-    def __init__(self, path, list_path, batch_size=None, shard_id=None, num_shards=None, mode = 'train', dataset_name=None):
+    def __init__(self, path, list_path, batch_size=None, shard_id=None, num_shards=None, mode = 'train', dataset_name=None, anno_cache=None):
         assert mode in ['train', 'test']
         self.mode = mode
         self.path = path
@@ -30,7 +30,10 @@ class LaneExternalIterator(object):
         else:
             raise NotImplementedError
         if self.mode == 'train':
-            if dataset_name == 'CULane':
+            if anno_cache is not None:
+                # Explicit cache path supplied via config
+                cache_path = os.path.join(path, anno_cache) if not os.path.isabs(anno_cache) else anno_cache
+            elif dataset_name == 'CULane':
                 cache_path = os.path.join(path, 'culane_anno_cache.json')
             elif dataset_name == 'Tusimple':
                 cache_path = os.path.join(path, 'tusimple_anno_cache.json')
@@ -267,8 +270,8 @@ def ExternalSourceTestPipeline(batch_size, num_threads, device_id, external_data
 # from data.constant import culane_row_anchor, culane_col_anchor
 class TrainCollect:
     def __init__(self, batch_size, num_threads, data_root, list_path, shard_id, num_shards, row_anchor, col_anchor, train_width, train_height, num_cell_row, num_cell_col,
-    dataset_name, top_crop, use_augmentations=True):
-        eii = LaneExternalIterator(data_root, list_path, batch_size=batch_size, shard_id=shard_id, num_shards=num_shards, dataset_name = dataset_name)
+    dataset_name, top_crop, use_augmentations=True, anno_cache=None):
+        eii = LaneExternalIterator(data_root, list_path, batch_size=batch_size, shard_id=shard_id, num_shards=num_shards, dataset_name=dataset_name, anno_cache=anno_cache)
 
         if dataset_name == 'CULane':
             self.original_image_width = 1640

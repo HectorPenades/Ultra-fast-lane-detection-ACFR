@@ -229,12 +229,15 @@ def get_train_loader(cfg):
                                 cfg.row_anchor, cfg.col_anchor, cfg.train_width, cfg.train_height, cfg.num_cell_row, cfg.num_cell_col, cfg.dataset, cfg.crop_ratio, getattr(cfg, 'use_augmentations', True))
     elif cfg.dataset == 'CULane_cropped':
         num_threads = getattr(cfg, 'num_workers', 4) or 4
+        _train_list = getattr(cfg, 'train_list', None)
+        _list_path = os.path.join(cfg.data_root, _train_list) if _train_list else os.path.join(cfg.data_root, 'list/train_gt.txt')
+        _anno_cache = getattr(cfg, 'anno_cache', None)
         train_loader = TrainCollect(cfg.batch_size, num_threads, cfg.data_root,
-                                os.path.join(cfg.data_root, 'list/train_gt.txt'),
+                                _list_path,
                                 get_rank(), get_world_size(),
                                 cfg.row_anchor, cfg.col_anchor, cfg.train_width, cfg.train_height,
                                 cfg.num_cell_row, cfg.num_cell_col, cfg.dataset, cfg.crop_ratio,
-                                getattr(cfg, 'use_augmentations', True))
+                                getattr(cfg, 'use_augmentations', True), anno_cache=_anno_cache)
     else:
         raise NotImplementedError
     return train_loader
