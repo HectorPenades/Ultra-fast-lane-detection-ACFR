@@ -1380,8 +1380,12 @@ def eval_lane(net, cfg, ep = None, logger = None):
         _min_row_frac = getattr(cfg, 'min_row_frac', None)
         _min_col_frac = getattr(cfg, 'min_col_frac', None)
         if not getattr(cfg, 'tta', False):
+            dist_print('Evaluation mode: standard (tta=False)')
+            dist_print(f'  min_row_frac={_min_row_frac}  min_col_frac={_min_col_frac}')
             run_test(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor = cfg.row_anchor, col_anchor = cfg.col_anchor, logger=logger, test_list=_test_list, min_row_frac=_min_row_frac, min_col_frac=_min_col_frac)
         else:
+            dist_print('Evaluation mode: TTA (tta=True) — feature-shift augmentation (left/right/up/down)')
+            dist_print(f'  min_row_frac={_min_row_frac}  min_col_frac={_min_col_frac}')
             run_test_tta(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor=cfg.row_anchor, col_anchor=cfg.col_anchor, min_row_frac=_min_row_frac, min_col_frac=_min_col_frac)
         synchronize()    # wait for all results
         if is_main_process():
