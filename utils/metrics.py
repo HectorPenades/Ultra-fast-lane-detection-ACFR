@@ -17,6 +17,9 @@ class Metric_mIoU():
         self.class_num = class_num
         self.hist = np.zeros((self.class_num,self.class_num))
     def update(self,predict,target):
+        # If predict is 4-D (N, C, H, W logits), take argmax over class dim.
+        if isinstance(predict, torch.Tensor) and predict.dim() == 4:
+            predict = predict.argmax(1)
         predict,target = converter(predict),converter(target)
 
         self.hist += fast_hist(predict,target,self.class_num)

@@ -305,7 +305,9 @@ class TrainCollect:
     def __next__(self):
         data = next(self.pii)
         images = data[0]['images']
-        seg_images = data[0]['seg_images']
+        # seg_images decoded as RGB [N,3,H,W]; masks are grayscale so all
+        # channels are identical — take channel 0 and cast to long class indices.
+        seg_images = data[0]['seg_images'][:, 0, :, :].long()
         points = data[0]['points']
         points_row = my_interp.run(points, self.interp_loc_row, 0)
         points_row_extend = self._extend(points_row[:,:,:,0]).transpose(1,2)

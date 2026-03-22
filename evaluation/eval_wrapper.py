@@ -976,7 +976,7 @@ def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_rati
             pass
 
 
-def generate_lines_local_tta(loc_row, loc_row_left, loc_row_right, exist_row, exist_row_left, exist_row_right, names, output_path, row_anchor):
+def generate_lines_local_tta(loc_row, loc_row_left, loc_row_right, exist_row, exist_row_left, exist_row_right, names, output_path, row_anchor, dataset=None, min_row_frac=None):
 
     local_width = 1
 
@@ -994,7 +994,12 @@ def generate_lines_local_tta(loc_row, loc_row_left, loc_row_right, exist_row, ex
 
     batch_size, num_grid, num_cls, num_lane = loc_row.shape
 
-    min_lane_length = num_cls / 2
+    _row_thresh = int(num_cls * min_row_frac) if min_row_frac is not None else num_cls // 2
+
+    if dataset == 'CULane_cropped':
+        lane_list = [0, 1]
+    else:
+        lane_list = [1, 2]
 
     for batch_idx in range(batch_size):
 
@@ -1004,48 +1009,44 @@ def generate_lines_local_tta(loc_row, loc_row_left, loc_row_right, exist_row, ex
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
         with open(line_save_path, 'w') as fp:
-            # for lane_idx in range(num_lane):
-            for lane_idx in [1,2]:
-                if valid[batch_idx,:,lane_idx].sum() >= min_lane_length:
+            for lane_idx in lane_list:
+                if valid[batch_idx,:,lane_idx].sum() > _row_thresh:
                     pt_all = []
                     for cls_idx in range(num_cls):
                         cnt = 0
                         out_tmp_all = 0
                         if valid[batch_idx,cls_idx,lane_idx]:
                             all_ind = torch.tensor(list(range(max(0,max_indices[batch_idx,cls_idx,lane_idx] - local_width), min(num_grid-1, max_indices[batch_idx,cls_idx,lane_idx] + local_width) + 1)))
-                            out_tmp = (loc_row[batch_idx,all_ind,cls_idx,lane_idx].softmax(0) * all_ind.float()).sum() + 0.5 
+                            out_tmp = (loc_row[batch_idx,all_ind,cls_idx,lane_idx].softmax(0) * all_ind.float()).sum() + 0.5
                             out_tmp = out_tmp / (num_grid-1) * 1640
                             cnt += 1
                             out_tmp_all = out_tmp_all + out_tmp
 
                         if valid_left[batch_idx,cls_idx,lane_idx]:
                             all_ind_left = torch.tensor(list(range(max(0,max_indices_left[batch_idx,cls_idx,lane_idx] - local_width), min(num_grid-1, max_indices_left[batch_idx,cls_idx,lane_idx] + local_width) + 1)))
-                        
-                            out_tmp_left = (loc_row_left[batch_idx,all_ind_left,cls_idx,lane_idx].softmax(0) * all_ind_left.float()).sum() + 0.5 
+                            out_tmp_left = (loc_row_left[batch_idx,all_ind_left,cls_idx,lane_idx].softmax(0) * all_ind_left.float()).sum() + 0.5
                             out_tmp_left = out_tmp_left / (num_grid-1) * 1640 + 1640./25
                             cnt += 1
                             out_tmp_all = out_tmp_all + out_tmp_left
 
                         if valid_right[batch_idx,cls_idx,lane_idx]:
                             all_ind_right = torch.tensor(list(range(max(0,max_indices_right[batch_idx,cls_idx,lane_idx] - local_width), min(num_grid-1, max_indices_right[batch_idx,cls_idx,lane_idx] + local_width) + 1)))
-                        
-                            out_tmp_right = (loc_row_right[batch_idx,all_ind_right,cls_idx,lane_idx].softmax(0) * all_ind_right.float()).sum() + 0.5 
+                            out_tmp_right = (loc_row_right[batch_idx,all_ind_right,cls_idx,lane_idx].softmax(0) * all_ind_right.float()).sum() + 0.5
                             out_tmp_right = out_tmp_right / (num_grid-1) * 1640 - 1640./25
                             cnt += 1
                             out_tmp_all = out_tmp_all + out_tmp_right
 
-
                         if cnt >= 2:
                             pt_all.append(( out_tmp_all/cnt , row_anchor[cls_idx] * 590))
-                    if len(pt_all) < min_lane_length:
+                    if len(pt_all) <= _row_thresh:
                             continue
                     for pt in pt_all:
                         fp.write('%.3f %.3f '% pt)
                     fp.write('\n')
 
-def generate_lines_col_local_tta(loc_col, loc_col_up, loc_col_down, exist_col, exist_col_up, exist_col_down, names, output_path, col_anchor):
+def generate_lines_col_local_tta(loc_col, loc_col_up, loc_col_down, exist_col, exist_col_up, exist_col_down, names, output_path, col_anchor, dataset=None, min_col_frac=None):
     local_width = 1
-    
+
     max_indices = loc_col.argmax(1).cpu()
     valid = exist_col.argmax(1).cpu()
     loc_col = loc_col.cpu()
@@ -1060,7 +1061,8 @@ def generate_lines_col_local_tta(loc_col, loc_col_up, loc_col_down, exist_col, e
 
     batch_size, num_grid, num_cls, num_lane = loc_col.shape
 
-    min_lane_length = num_cls / 4
+    _col_thresh = int(num_cls * min_col_frac) if min_col_frac is not None else num_cls // 4
+    lane_list = [0, 1] if dataset == 'CULane_cropped' else [0, 3]
 
     for batch_idx in range(batch_size):
 
@@ -1070,9 +1072,8 @@ def generate_lines_col_local_tta(loc_col, loc_col_up, loc_col_down, exist_col, e
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
         with open(line_save_path, 'a') as fp:
-            # for lane_idx in range(num_lane):
-            for lane_idx in [0,3]:
-                if valid[batch_idx,:,lane_idx].sum() >= min_lane_length:
+            for lane_idx in lane_list:
+                if valid[batch_idx,:,lane_idx].sum() > _col_thresh:
                     pt_all = []
                     for cls_idx in range(num_cls):
                         cnt = 0
@@ -1099,19 +1100,18 @@ def generate_lines_col_local_tta(loc_col, loc_col_up, loc_col_down, exist_col, e
 
                         if cnt >= 2:
                             pt_all.append(( col_anchor[cls_idx] * 1640, out_tmp_all/cnt ))
-                    if len(pt_all) < min_lane_length:
+                    if len(pt_all) <= _col_thresh:
                         continue
                     for pt in pt_all:
                         fp.write('%.3f %.3f '% pt)
                     fp.write('\n')
 
-def run_test_tta(dataset, net, data_root, exp_name, work_dir,distributed, crop_ratio, train_width, train_height, batch_size=8, row_anchor = None, col_anchor = None):
+def run_test_tta(dataset, net, data_root, exp_name, work_dir, distributed, crop_ratio, train_width, train_height, batch_size=8, row_anchor=None, col_anchor=None, min_row_frac=None, min_col_frac=None):
     output_path = os.path.join(work_dir, exp_name)
     if not os.path.exists(output_path) and is_main_process():
         os.mkdir(output_path)
     synchronize()
     loader = get_test_loader(batch_size, data_root, dataset, distributed, crop_ratio, train_width, train_height)
-    # import pdb;pdb.set_trace()
     for i, data in enumerate(dist_tqdm(loader)):
         imgs, names = data
         imgs = imgs.cuda()
@@ -1127,9 +1127,8 @@ def run_test_tta(dataset, net, data_root, exp_name, work_dir,distributed, crop_r
             exist_row, exist_row_left, exist_row_right, _, _ = torch.chunk(pred['exist_row'], 5)
             exist_col, _, _, exist_col_up, exist_col_down = torch.chunk(pred['exist_col'], 5)
 
-
-        generate_lines_local_tta(loc_row, loc_row_left, loc_row_right, exist_row, exist_row_left, exist_row_right, names, output_path, row_anchor)
-        generate_lines_col_local_tta(loc_col, loc_col_up, loc_col_down, exist_col, exist_col_up, exist_col_down, names, output_path, col_anchor)
+        generate_lines_local_tta(loc_row, loc_row_left, loc_row_right, exist_row, exist_row_left, exist_row_right, names, output_path, row_anchor, dataset=dataset, min_row_frac=min_row_frac)
+        generate_lines_col_local_tta(loc_col, loc_col_up, loc_col_down, exist_col, exist_col_up, exist_col_down, names, output_path, col_anchor, dataset=dataset, min_col_frac=min_col_frac)
 
 def generate_tusimple_lines(row_out, row_ext, col_out, col_ext, row_anchor = None, col_anchor = None, mode = '2row2col'):
     tusimple_h_sample = np.linspace(160, 710, 56)
@@ -1383,7 +1382,7 @@ def eval_lane(net, cfg, ep = None, logger = None):
         if not getattr(cfg, 'tta', False):
             run_test(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor = cfg.row_anchor, col_anchor = cfg.col_anchor, logger=logger, test_list=_test_list, min_row_frac=_min_row_frac, min_col_frac=_min_col_frac)
         else:
-            run_test_tta(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor = cfg.row_anchor, col_anchor = cfg.col_anchor)
+            run_test_tta(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor=cfg.row_anchor, col_anchor=cfg.col_anchor, min_row_frac=_min_row_frac, min_col_frac=_min_col_frac)
         synchronize()    # wait for all results
         if is_main_process():
             # Run the standard CULane evaluator on the generated detection folder.

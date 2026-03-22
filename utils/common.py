@@ -259,7 +259,16 @@ def inference_culane_tusimple(net, data_label):
                 'cls_out_col_ext_label':cls_out_col_ext_label, 'labels_row_float':data_label['labels_row_float'], 'labels_col_float':data_label['labels_col_float'] }
     if 'seg_out' in pred.keys():
         res_dict['seg_out'] = pred['seg_out']
-        res_dict['seg_label'] = data_label['seg_images']
+        seg_label = data_label['seg_images']
+        # SegHead outputs at 1/8 resolution (layer2 scale). Downsample the label
+        # mask to match using nearest-neighbour (preserves integer class indices).
+        if seg_label.shape[-2:] != pred['seg_out'].shape[-2:]:
+            seg_label = torch.nn.functional.interpolate(
+                seg_label.unsqueeze(1).float(),
+                size=pred['seg_out'].shape[-2:],
+                mode='nearest',
+            ).squeeze(1).long()
+        res_dict['seg_label'] = seg_label
 
     return res_dict
 def inference_curvelanes(net, data_label):
