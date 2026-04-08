@@ -15,7 +15,12 @@ warmup_iters = 695
 
 # ── Backbone ──────────────────────────────────────────────────────────────────
 backbone = '50'            # ResNet-50 (~25M params vs ~21M en ResNet-34)
-use_aux = False
+# use_aux=True añade una cabeza de segmentación auxiliar que supervisa los mapas
+# de características intermedios con las máscaras PNG de laneseg_label_w16/.
+# El pipeline DALI ya carga las máscaras (seg_images) en todos los batches.
+# Beneficio: regularización extra que mejora las features del backbone.
+# Coste: ~10-15% más de VRAM y tiempo de entrenamiento por epoch.
+use_aux = True
 fc_norm = True
 
 # ── Loss weights ──────────────────────────────────────────────────────────────
@@ -77,3 +82,14 @@ anno_cache = None
 # col: de 81 anchors, requiere >32 (40%) en lugar del original >20 (25%)
 min_row_frac = 0.7
 min_col_frac = 0.4
+
+# ── Filtros espaciales de detecciones fantasma ────────────────────────────────
+# left_x_frac: descarta carriles cuya mediana X < N% del ancho de imagen (1640 px).
+#   La zona izquierda (0–246 px) es el capó del vehículo, nunca puede haber carril.
+#   0.15 → descarta si mediana X < 246 px.  None = desactivado.
+left_x_frac = 0.15
+
+# min_y_span_frac: descarta carriles cuyo rango Y de anchors válidos < N% de la altura
+#   (590 px). Filtra líneas casi horizontales que solo aparecen en la parte superior.
+#   0.10 → requiere al menos 59 px de extensión vertical.  None = desactivado.
+min_y_span_frac = 0.10

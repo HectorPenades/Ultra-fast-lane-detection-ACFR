@@ -154,11 +154,11 @@ def generate_lines_col(out_col,out_col_ext, shape, names, output_path, griding_n
                             fp.write('%.3f %.3f '% ( col_x, loc[j,k,i] ))
                     fp.write('\n')
 
-def generate_lines_local(dataset, out, out_ext, names, output_path, mode='normal', row_anchor=None, min_row_frac=None):
+def generate_lines_local(dataset, out, out_ext, names, output_path, mode='normal', row_anchor=None, min_row_frac=None, left_x_frac=None, min_y_span_frac=None):
     batch_size, num_grid_row, num_cls, num_lane = out.shape
     max_indices = out.argmax(1).cpu()
     # n , num_cls, num_lanes
-    
+
     valid = out_ext.argmax(1).cpu()
     # n, num_cls, num_lanes
     out = out.cpu()
@@ -177,6 +177,10 @@ def generate_lines_local(dataset, out, out_ext, names, output_path, mode='normal
     # ensure lane indices are valid for this model output
     lane_list = _sanitize_lane_list(list(lane_list), num_lane)
 
+    # image-space thresholds for spatial filters
+    _img_w = 1640 if dataset in ('CULane', 'CULane_cropped') else 2560
+    _img_h = 590  if dataset in ('CULane', 'CULane_cropped') else 1440
+
     local_width = 1
     for j in range(valid.shape[0]):
 
@@ -190,25 +194,49 @@ def generate_lines_local(dataset, out, out_ext, names, output_path, mode='normal
             # for i in range(num_lane):
             for i in lane_list:
                 if valid[j,:,i].sum() > _row_thresh:
+                    # Collect all valid (x, y) pairs before writing so we can apply
+                    # spatial filters on the complete lane geometry.
+                    pts = []
                     for k in range(valid.shape[1]):
                         if valid[j,k,i]:
                             all_ind = torch.tensor(list(range(max(0,max_indices[j,k,i] - local_width), min(out.shape[1]-1, max_indices[j,k,i] + local_width) + 1)))
-
                             out_tmp = (out[j,all_ind,k,i].softmax(0) * all_ind.float()).sum() + 0.5
-
                             if dataset in ('CULane', 'CULane_cropped'):
-                                out_tmp = out_tmp / (out.shape[1]-1) * 1640
-                                fp.write('%.3f %.3f '% ( out_tmp , row_anchor[k] * 590))
+                                px = float(out_tmp / (out.shape[1]-1) * _img_w)
+                                py = float(row_anchor[k] * _img_h)
                             elif dataset == 'CurveLanes':
-                                out_tmp = out_tmp / (out.shape[1]-1) * 2560
-                                fp.write('%.3f %.3f '% ( out_tmp , row_anchor[k] * 1440))
+                                px = float(out_tmp / (out.shape[1]-1) * _img_w)
+                                py = float(row_anchor[k] * _img_h)
                             else:
                                 raise Exception
+                            pts.append((px, py))
+
+                    if len(pts) == 0:
+                        continue
+
+                    # ── Spatial filter 1: left-zone / car-body rejection ──────────
+                    # Skip lanes whose median X is inside the left dead-zone
+                    # (occupied by the car body — can never be a real lane).
+                    if left_x_frac is not None:
+                        xs = [p[0] for p in pts]
+                        if float(np.median(xs)) < left_x_frac * _img_w:
+                            continue
+
+                    # ── Spatial filter 2: nearly-horizontal / top-only rejection ──
+                    # Skip lanes whose Y range is too narrow (appear as a
+                    # near-horizontal stripe in the upper part of the image).
+                    if min_y_span_frac is not None:
+                        ys = [p[1] for p in pts]
+                        if max(ys) - min(ys) < min_y_span_frac * _img_h:
+                            continue
+
+                    for px, py in pts:
+                        fp.write('%.3f %.3f ' % (px, py))
                     fp.write('\n')
                 elif mode == 'all':
                     fp.write('\n')
 
-def generate_lines_col_local(dataset, out_col,out_col_ext, names, output_path, mode='normal', col_anchor=None, min_col_frac=None):
+def generate_lines_col_local(dataset, out_col,out_col_ext, names, output_path, mode='normal', col_anchor=None, min_col_frac=None, left_x_frac=None, min_y_span_frac=None):
     batch_size, num_grid_col, num_cls, num_lane = out_col.shape
     max_indices = out_col.argmax(1).cpu()
     # n, num_cls, num_lanes
@@ -231,6 +259,10 @@ def generate_lines_col_local(dataset, out_col,out_col_ext, names, output_path, m
     # ensure lane indices are valid for this model output
     lane_list = _sanitize_lane_list(list(lane_list), num_lane)
 
+    # image-space thresholds for spatial filters
+    _img_w = 1640 if dataset in ('CULane', 'CULane_cropped') else 2560
+    _img_h = 590  if dataset in ('CULane', 'CULane_cropped') else 1440
+
     for j in range(valid.shape[0]):
 
         name = names[j]
@@ -243,19 +275,40 @@ def generate_lines_col_local(dataset, out_col,out_col_ext, names, output_path, m
             # for i in range(num_lane):
             for i in lane_list:
                 if valid[j,:,i].sum() > _col_thresh:
+                    # Collect all valid (x, y) pairs before writing so we can apply
+                    # spatial filters on the complete lane geometry.
+                    pts = []
                     for k in range(valid.shape[1]):
                         if valid[j,k,i]:
                             all_ind = torch.tensor(list(range(max(0,max_indices[j,k,i] - local_width), min(out_col.shape[1]-1, max_indices[j,k,i] + local_width) + 1)))
                             out_tmp = (out_col[j,all_ind,k,i].softmax(0) * all_ind.float()).sum() + 0.5
                             if dataset in ('CULane', 'CULane_cropped'):
-                                out_tmp = out_tmp / (out_col.shape[1]-1) * 590
-                                fp.write('%.3f %.3f '% ( col_anchor[k] * 1640, out_tmp ))
+                                py = float(out_tmp / (out_col.shape[1]-1) * _img_h)
+                                px = float(col_anchor[k] * _img_w)
                             elif dataset == 'CurveLanes':
-                                out_tmp = out_tmp / (out_col.shape[1]-1) * 1440
-                                fp.write('%.3f %.3f '% ( col_anchor[k] * 2560, out_tmp ))
+                                py = float(out_tmp / (out_col.shape[1]-1) * _img_h)
+                                px = float(col_anchor[k] * _img_w)
                             else:
                                 raise Exception
+                            pts.append((px, py))
 
+                    if len(pts) == 0:
+                        continue
+
+                    # ── Spatial filter 1: left-zone / car-body rejection ──────────
+                    if left_x_frac is not None:
+                        xs = [p[0] for p in pts]
+                        if float(np.median(xs)) < left_x_frac * _img_w:
+                            continue
+
+                    # ── Spatial filter 2: nearly-horizontal / top-only rejection ──
+                    if min_y_span_frac is not None:
+                        ys = [p[1] for p in pts]
+                        if max(ys) - min(ys) < min_y_span_frac * _img_h:
+                            continue
+
+                    for px, py in pts:
+                        fp.write('%.3f %.3f ' % (px, py))
                     fp.write('\n')
                 elif mode == 'all':
                     fp.write('\n')
@@ -601,7 +654,7 @@ def rectify_lines(names, output_path):
             fp.close()
 
 
-def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_ratio, train_width, train_height , batch_size=8, row_anchor = None, col_anchor = None, logger=None, test_list=None, min_row_frac=None, min_col_frac=None):
+def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_ratio, train_width, train_height , batch_size=8, row_anchor = None, col_anchor = None, logger=None, test_list=None, min_row_frac=None, min_col_frac=None, left_x_frac=None, min_y_span_frac=None):
     # torch.backends.cudnn.benchmark = True
     output_path = os.path.join(work_dir, exp_name)
     if not os.path.exists(output_path) and is_main_process():
@@ -754,8 +807,8 @@ def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_rati
                 eprint('Could not read pred shapes for debug')
         
         if dataset in ('CULane', 'CULane_cropped'):
-            generate_lines_local(dataset, pred['loc_row'],pred['exist_row'], names, output_path, 'normal', row_anchor=row_anchor, min_row_frac=min_row_frac)
-            generate_lines_col_local(dataset, pred['loc_col'],pred['exist_col'], names, output_path, 'normal', col_anchor=col_anchor, min_col_frac=min_col_frac)
+            generate_lines_local(dataset, pred['loc_row'],pred['exist_row'], names, output_path, 'normal', row_anchor=row_anchor, min_row_frac=min_row_frac, left_x_frac=left_x_frac, min_y_span_frac=min_y_span_frac)
+            generate_lines_col_local(dataset, pred['loc_col'],pred['exist_col'], names, output_path, 'normal', col_anchor=col_anchor, min_col_frac=min_col_frac, left_x_frac=left_x_frac, min_y_span_frac=min_y_span_frac)
         elif dataset == 'CurveLanes':
             generate_lines_local_curve_combine(dataset, pred['loc_row'],pred['exist_row'], names, output_path, row_anchor=row_anchor)
             generate_lines_col_local_curve_combine(dataset, pred['loc_col'],pred['exist_col'], names, output_path, col_anchor=col_anchor)
@@ -976,7 +1029,7 @@ def run_test(dataset, net, data_root, exp_name, work_dir, distributed, crop_rati
             pass
 
 
-def generate_lines_local_tta(loc_row, loc_row_left, loc_row_right, exist_row, exist_row_left, exist_row_right, names, output_path, row_anchor, dataset=None, min_row_frac=None):
+def generate_lines_local_tta(loc_row, loc_row_left, loc_row_right, exist_row, exist_row_left, exist_row_right, names, output_path, row_anchor, dataset=None, min_row_frac=None, left_x_frac=None, min_y_span_frac=None):
 
     local_width = 1
 
@@ -1039,12 +1092,25 @@ def generate_lines_local_tta(loc_row, loc_row_left, loc_row_right, exist_row, ex
                         if cnt >= 2:
                             pt_all.append(( out_tmp_all/cnt , row_anchor[cls_idx] * 590))
                     if len(pt_all) <= _row_thresh:
+                        continue
+
+                    # ── Spatial filter 1: left-zone / car-body rejection ──────────
+                    if left_x_frac is not None:
+                        xs = [p[0] for p in pt_all]
+                        if float(np.median(xs)) < left_x_frac * 1640:
                             continue
+
+                    # ── Spatial filter 2: nearly-horizontal / top-only rejection ──
+                    if min_y_span_frac is not None:
+                        ys = [p[1] for p in pt_all]
+                        if max(ys) - min(ys) < min_y_span_frac * 590:
+                            continue
+
                     for pt in pt_all:
                         fp.write('%.3f %.3f '% pt)
                     fp.write('\n')
 
-def generate_lines_col_local_tta(loc_col, loc_col_up, loc_col_down, exist_col, exist_col_up, exist_col_down, names, output_path, col_anchor, dataset=None, min_col_frac=None):
+def generate_lines_col_local_tta(loc_col, loc_col_up, loc_col_down, exist_col, exist_col_up, exist_col_down, names, output_path, col_anchor, dataset=None, min_col_frac=None, left_x_frac=None, min_y_span_frac=None):
     local_width = 1
 
     max_indices = loc_col.argmax(1).cpu()
@@ -1102,11 +1168,24 @@ def generate_lines_col_local_tta(loc_col, loc_col_up, loc_col_down, exist_col, e
                             pt_all.append(( col_anchor[cls_idx] * 1640, out_tmp_all/cnt ))
                     if len(pt_all) <= _col_thresh:
                         continue
+
+                    # ── Spatial filter 1: left-zone / car-body rejection ──────────
+                    if left_x_frac is not None:
+                        xs = [p[0] for p in pt_all]
+                        if float(np.median(xs)) < left_x_frac * 1640:
+                            continue
+
+                    # ── Spatial filter 2: nearly-horizontal / top-only rejection ──
+                    if min_y_span_frac is not None:
+                        ys = [p[1] for p in pt_all]
+                        if max(ys) - min(ys) < min_y_span_frac * 590:
+                            continue
+
                     for pt in pt_all:
                         fp.write('%.3f %.3f '% pt)
                     fp.write('\n')
 
-def run_test_tta(dataset, net, data_root, exp_name, work_dir, distributed, crop_ratio, train_width, train_height, batch_size=8, row_anchor=None, col_anchor=None, min_row_frac=None, min_col_frac=None):
+def run_test_tta(dataset, net, data_root, exp_name, work_dir, distributed, crop_ratio, train_width, train_height, batch_size=8, row_anchor=None, col_anchor=None, min_row_frac=None, min_col_frac=None, left_x_frac=None, min_y_span_frac=None):
     output_path = os.path.join(work_dir, exp_name)
     if not os.path.exists(output_path) and is_main_process():
         os.mkdir(output_path)
@@ -1127,8 +1206,8 @@ def run_test_tta(dataset, net, data_root, exp_name, work_dir, distributed, crop_
             exist_row, exist_row_left, exist_row_right, _, _ = torch.chunk(pred['exist_row'], 5)
             exist_col, _, _, exist_col_up, exist_col_down = torch.chunk(pred['exist_col'], 5)
 
-        generate_lines_local_tta(loc_row, loc_row_left, loc_row_right, exist_row, exist_row_left, exist_row_right, names, output_path, row_anchor, dataset=dataset, min_row_frac=min_row_frac)
-        generate_lines_col_local_tta(loc_col, loc_col_up, loc_col_down, exist_col, exist_col_up, exist_col_down, names, output_path, col_anchor, dataset=dataset, min_col_frac=min_col_frac)
+        generate_lines_local_tta(loc_row, loc_row_left, loc_row_right, exist_row, exist_row_left, exist_row_right, names, output_path, row_anchor, dataset=dataset, min_row_frac=min_row_frac, left_x_frac=left_x_frac, min_y_span_frac=min_y_span_frac)
+        generate_lines_col_local_tta(loc_col, loc_col_up, loc_col_down, exist_col, exist_col_up, exist_col_down, names, output_path, col_anchor, dataset=dataset, min_col_frac=min_col_frac, left_x_frac=left_x_frac, min_y_span_frac=min_y_span_frac)
 
 def generate_tusimple_lines(row_out, row_ext, col_out, col_ext, row_anchor = None, col_anchor = None, mode = '2row2col'):
     tusimple_h_sample = np.linspace(160, 710, 56)
@@ -1379,14 +1458,16 @@ def eval_lane(net, cfg, ep = None, logger = None):
         _test_list = getattr(cfg, 'test_list', None)
         _min_row_frac = getattr(cfg, 'min_row_frac', None)
         _min_col_frac = getattr(cfg, 'min_col_frac', None)
+        _left_x_frac = getattr(cfg, 'left_x_frac', None)
+        _min_y_span_frac = getattr(cfg, 'min_y_span_frac', None)
         if not getattr(cfg, 'tta', False):
             dist_print('Evaluation mode: standard (tta=False)')
-            dist_print(f'  min_row_frac={_min_row_frac}  min_col_frac={_min_col_frac}')
-            run_test(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor = cfg.row_anchor, col_anchor = cfg.col_anchor, logger=logger, test_list=_test_list, min_row_frac=_min_row_frac, min_col_frac=_min_col_frac)
+            dist_print(f'  min_row_frac={_min_row_frac}  min_col_frac={_min_col_frac}  left_x_frac={_left_x_frac}  min_y_span_frac={_min_y_span_frac}')
+            run_test(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor = cfg.row_anchor, col_anchor = cfg.col_anchor, logger=logger, test_list=_test_list, min_row_frac=_min_row_frac, min_col_frac=_min_col_frac, left_x_frac=_left_x_frac, min_y_span_frac=_min_y_span_frac)
         else:
             dist_print('Evaluation mode: TTA (tta=True) — feature-shift augmentation (left/right/up/down)')
-            dist_print(f'  min_row_frac={_min_row_frac}  min_col_frac={_min_col_frac}')
-            run_test_tta(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor=cfg.row_anchor, col_anchor=cfg.col_anchor, min_row_frac=_min_row_frac, min_col_frac=_min_col_frac)
+            dist_print(f'  min_row_frac={_min_row_frac}  min_col_frac={_min_col_frac}  left_x_frac={_left_x_frac}  min_y_span_frac={_min_y_span_frac}')
+            run_test_tta(cfg.dataset, net, cfg.data_root, 'culane_eval_tmp', cfg.test_work_dir, cfg.distributed, cfg.crop_ratio, cfg.train_width, cfg.train_height, row_anchor=cfg.row_anchor, col_anchor=cfg.col_anchor, min_row_frac=_min_row_frac, min_col_frac=_min_col_frac, left_x_frac=_left_x_frac, min_y_span_frac=_min_y_span_frac)
         synchronize()    # wait for all results
         if is_main_process():
             # Run the standard CULane evaluator on the generated detection folder.

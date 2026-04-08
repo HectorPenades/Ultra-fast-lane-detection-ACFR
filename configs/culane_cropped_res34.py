@@ -57,5 +57,18 @@ anno_cache = None
 # Ejemplos:
 #   min_row_frac = 0.6   → row requiere >43/72 anchors (antes >36)
 #   min_col_frac = 0.35  → col requiere >28/81 anchors (antes >20, mantiene ratio similar)
-min_row_frac = 0.7
-min_col_frac = 0.4
+min_row_frac = 0.6
+min_col_frac = 0.35
+
+# ── Filtros espaciales de detecciones fantasma ────────────────────────────────
+# left_x_frac: descarta carriles cuya mediana X < N% del ancho de imagen (1640 px).
+#   La zona izquierda (0–246 px) es el capó del vehículo, nunca puede haber carril.
+#   0.15 → descarta si mediana X < 246 px.  None = desactivado.
+left_x_frac = 0.15
+
+# min_y_span_frac: descarta carriles cuyo rango Y de anchors válidos < N% de la altura
+#   (590 px). Filtra líneas casi horizontales que solo aparecen en la parte superior.
+#   0.10 → requiere al menos 59 px de extensión vertical.  None = desactivado.
+min_y_span_frac = 0.10
+
+tta = None
