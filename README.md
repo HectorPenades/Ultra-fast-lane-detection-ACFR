@@ -13,7 +13,7 @@ The original repository is [cfzd/Ultra-Fast-Lane-Detection-V2](https://github.co
 3. [Data preparation](#data-preparation)
 4. [Training](#training)
 5. [Evaluation](#evaluation)
-6. [Inference](#inference)
+6. [Inference](#inference) (`infer.py` vs `infer_standalone.py`)
 7. [Configuration reference](#configuration-reference)
 8. [TensorBoard](#tensorboard)
 
@@ -342,9 +342,25 @@ The evaluator runs the CULane binary for IoU ∈ {0.3, 0.4, 0.5, 0.6} × margin 
 
 ## Inference
 
-`infer.py` runs a trained checkpoint on one image or a folder of images and saves annotated results. It does not require a test list or annotation cache.
+There are two inference scripts. Neither requires DALI, training infrastructure, or a test list.
 
-### Usage
+### Key difference
+
+**`infer.py`** imports model code from the repo (`utils/`, `model/`). It must be run from the repository root and accepts a `--config` flag so it works with any backbone or resolution.
+
+**`infer_standalone.py`** has the entire model architecture inlined in a single file. It has **zero repo dependencies** — copy it to any machine, install `torch torchvision opencv-python Pillow numpy`, and it runs. The trade-off is that the config is hardcoded inside the file (`_CFG` dict at the top), so it only works out-of-the-box with the default ResNet-34 / 800×288 / 2-lane model. If you retrain with a different config, edit `_CFG` accordingly.
+
+| | `infer.py` | `infer_standalone.py` |
+|---|---|---|
+| Requires repo | Yes | No — single file, copy anywhere |
+| Config | `--config` flag (any `.py` config) | Hardcoded `_CFG` at top of file |
+| Works with different backbone / resolution | Yes | Only after editing `_CFG` |
+| Extra dependencies beyond pip packages | Yes (`utils/`, `model/`) | None |
+| When to use | Working inside the repo | Deploying without the repo |
+
+### infer.py
+
+Reads model parameters from a config file. Must be run from the repository root.
 
 ```bash
 # Single image
@@ -358,9 +374,12 @@ python infer.py --model /path/to/model_best.pth \
                 --input /path/to/images/ \
                 --output /path/to/results/ \
                 --save_txt
-```
 
-### Arguments
+# Different config (e.g. ResNet-50)
+python infer.py --model /path/to/model_best.pth \
+                --input /path/to/images/ \
+                --config configs/culane_cropped_res50.py
+```
 
 | Argument | Default | Description |
 |---|---|---|
@@ -370,9 +389,39 @@ python infer.py --model /path/to/model_best.pth \
 | `--config` / `-c` | `configs/culane_cropped_res34.py` | Config file |
 | `--save_txt` | off | Also save `.lines.txt` with raw coordinates |
 
-### Outputs
+### infer_standalone.py
 
-For each input image `path/to/img.jpg` the script writes:
+Fully self-contained. All model code is inlined. No repo imports. Can be copied and run anywhere without cloning the repository. Hardcoded for the default `culane_cropped_res34` model (ResNet-34 backbone, 800×288 input, 2 lanes).
+
+```bash
+# Install the only required packages (if not already present)
+pip install torch torchvision opencv-python Pillow numpy
+
+# Single image
+python infer_standalone.py --model /path/to/model_best.pth --input image.jpg
+
+# Folder of images
+python infer_standalone.py --model /path/to/model_best.pth --input /path/to/images/
+
+# Custom output directory + save .lines.txt alongside each result
+python infer_standalone.py --model /path/to/model_best.pth \
+                           --input /path/to/images/ \
+                           --output /path/to/results/ \
+                           --save_txt
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `--model` / `-m` | required | Path to checkpoint `.pth` |
+| `--input` / `-i` | required | Image file or folder |
+| `--output` / `-o` | `inference_output/` | Output directory |
+| `--save_txt` | off | Also save `.lines.txt` with raw coordinates |
+
+> Note: there is no `--config` argument. If you retrain with a different backbone or resolution, edit the `_CFG` dict at the top of the file.
+
+### Outputs (both scripts)
+
+For each input image `path/to/img.jpg` both scripts write:
 
 - `<output>/path/to/img_lanes.jpg` — original image with lanes drawn (green = left, red = right)
 - `<output>/path/to/img_lanes.lines.txt` — one lane per line, `x1 y1 x2 y2 ...` in original pixel coordinates (only with `--save_txt`)
