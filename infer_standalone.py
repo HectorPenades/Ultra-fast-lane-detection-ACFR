@@ -12,6 +12,9 @@ Usage:
     # Folder of images (walks subdirectories)
     python infer_standalone.py --model /path/to/model_best.pth --input /path/to/images/
 
+    # List file (one image path per line, space-separated if labels follow)
+    python infer_standalone.py --model /path/to/model_best.pth --input /path/to/list.txt
+
     # Custom output directory + save .lines.txt alongside each result
     python infer_standalone.py --model /path/to/model_best.pth \\
                                --input /path/to/images/ \\
@@ -349,7 +352,30 @@ def lanes_to_lines_txt(lanes: list) -> str:
     return '\n'.join(lines) + '\n' if lines else ''
 
 
-def collect_images(input_path: str) -> list:
+def collect_images(input_path: str, data_root: str = None) -> list:
+    # If input is a .txt file, read image paths from it (one per line)
+    if input_path.endswith('.txt'):
+        if not os.path.isfile(input_path):
+            raise FileNotFoundError(f'List file not found: {input_path}')
+
+        # Infer data_root from the directory containing the .txt file if not provided
+        if data_root is None:
+            data_root = os.path.dirname(os.path.dirname(input_path))  # Go up from list/ to dataset root
+
+        paths = []
+        with open(input_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):  # Skip empty lines and comments
+                    # Extract image path (first column, space-separated)
+                    img_path = line.split()[0]
+                    # Remove leading '/' if present (convert absolute-style to relative)
+                    img_path = img_path.lstrip('/')
+                    # Join with data_root
+                    img_path = os.path.join(data_root, img_path)
+                    paths.append(img_path)
+        return paths
+    # Otherwise treat as file or directory
     if os.path.isfile(input_path):
         return [input_path]
     if os.path.isdir(input_path):
@@ -382,8 +408,15 @@ def run(args):
 
     transform = build_transform(cfg)
 
-    input_root = os.path.dirname(args.input) if os.path.isfile(args.input) else args.input
-    images = collect_images(args.input)
+    # For .txt files, infer data_root from parent directories
+    if args.input.endswith('.txt'):
+        data_root = os.path.dirname(os.path.dirname(args.input))  # list/test.txt → dataset root
+        input_root = data_root
+    else:
+        input_root = os.path.dirname(args.input) if os.path.isfile(args.input) else args.input
+        data_root = None
+
+    images = collect_images(args.input, data_root=data_root)
     if not images:
         print('No images found.')
         return
